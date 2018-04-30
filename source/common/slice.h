@@ -1,7 +1,8 @@
 /*****************************************************************************
- * Copyright (C) 2015 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Steve Borho <steve@borho.org>
+ *          Min Chen <chenm003@163.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -223,6 +224,7 @@ struct SPS
 
     int      log2MinCodingBlockSize;
     int      log2DiffMaxMinCodingBlockSize;
+    int      log2MaxPocLsb;
 
     uint32_t quadtreeTULog2MaxSize;
     uint32_t quadtreeTULog2MinSize;
@@ -237,10 +239,16 @@ struct SPS
     uint32_t maxLatencyIncrease;
     int      numReorderPics;
 
+    RPS      spsrps[MAX_NUM_SHORT_TERM_RPS];
+    int      spsrpsNum;
+    int      numGOPBegin;
+
     bool     bUseSAO; // use param
     bool     bUseAMP; // use param
     bool     bUseStrongIntraSmoothing; // use param
     bool     bTemporalMVPEnabled;
+    bool     bEmitVUITimingInfo;
+    bool     bEmitVUIHRDInfo;
 
     Window   conformanceWindow;
     VUI      vuiParameters;
@@ -279,6 +287,9 @@ struct PPS
 
     bool     bDeblockingFilterControlPresent;
     bool     bPicDisableDeblockingFilter;
+
+    int      numRefIdxDefault[2];
+    bool     pps_slice_chroma_qp_offsets_present_flag;
 };
 
 struct WeightParam
@@ -329,8 +340,10 @@ public:
     NalUnitType m_nalUnitType;
     SliceType   m_sliceType;
     int         m_sliceQp;
+    int         m_chromaQpOffset[2];
     int         m_poc;
     int         m_lastIDR;
+    int         m_rpsIdx;
 
     uint32_t    m_colRefIdx;       // never modified
 
@@ -344,6 +357,11 @@ public:
     bool        m_sLFaseFlag;      // loop filter boundary flag
     bool        m_colFromL0Flag;   // collocated picture from List0 or List1 flag
 
+    int         m_iPPSQpMinus26;
+    int         numRefIdxDefault[2];
+    int         m_iNumRPSInSPS;
+    const x265_param *m_param;
+
     Slice()
     {
         m_lastIDR = 0;
@@ -353,6 +371,11 @@ public:
         memset(m_refReconPicList, 0, sizeof(m_refReconPicList));
         memset(m_refPOCList, 0, sizeof(m_refPOCList));
         disableWeights();
+        m_iPPSQpMinus26 = 0;
+        numRefIdxDefault[0] = 1;
+        numRefIdxDefault[1] = 1;
+        m_rpsIdx = -1;
+        m_chromaQpOffset[0] = m_chromaQpOffset[1] = 0;
     }
 
     void disableWeights();
@@ -362,14 +385,14 @@ public:
     bool getRapPicFlag() const
     {
         return m_nalUnitType == NAL_UNIT_CODED_SLICE_IDR_W_RADL
+            || m_nalUnitType == NAL_UNIT_CODED_SLICE_IDR_N_LP
             || m_nalUnitType == NAL_UNIT_CODED_SLICE_CRA;
     }
-
     bool getIdrPicFlag() const
     {
-        return m_nalUnitType == NAL_UNIT_CODED_SLICE_IDR_W_RADL;
+        return m_nalUnitType == NAL_UNIT_CODED_SLICE_IDR_W_RADL
+            || m_nalUnitType == NAL_UNIT_CODED_SLICE_IDR_N_LP;
     }
-
     bool isIRAP() const   { return m_nalUnitType >= 16 && m_nalUnitType <= 23; }
 
     bool isIntra()  const { return m_sliceType == I_SLICE; }

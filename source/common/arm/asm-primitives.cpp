@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2016 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Steve Borho <steve@borho.org>
  *          Praveen Kumar Tiwari <praveen@multicorewareinc.com>
@@ -1007,8 +1007,10 @@ void setupAssemblyPrimitives(EncoderPrimitives &p, int cpuMask)
 
         p.cu[BLOCK_4x4].dct = PFX(dct_4x4_neon);
         p.cu[BLOCK_8x8].dct = PFX(dct_8x8_neon);
+        p.cu[BLOCK_16x16].dct = PFX(dct_16x16_neon);
 #if !HIGH_BIT_DEPTH
         p.cu[BLOCK_4x4].psy_cost_pp = PFX(psyCost_4x4_neon);
+        p.cu[BLOCK_8x8].psy_cost_pp = PFX(psyCost_8x8_neon);
 #endif // !HIGH_BIT_DEPTH
     }
     if (cpuMask & X265_CPU_ARMV6)

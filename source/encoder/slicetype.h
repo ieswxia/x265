@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Steve Borho <steve@borho.org>
  *          Min Chen <chenm003@163.com>
@@ -84,13 +84,14 @@ struct LookaheadTLD
     ~LookaheadTLD() { X265_FREE(wbuffer[0]); }
 
     void calcAdaptiveQuantFrame(Frame *curFrame, x265_param* param);
-    void lowresIntraEstimate(Lowres& fenc);
+    void lowresIntraEstimate(Lowres& fenc, uint32_t qgSize);
 
     void weightsAnalyse(Lowres& fenc, Lowres& ref);
 
 protected:
 
-    uint32_t acEnergyCu(Frame* curFrame, uint32_t blockX, uint32_t blockY, int csp);
+    uint32_t acEnergyCu(Frame* curFrame, uint32_t blockX, uint32_t blockY, int csp, uint32_t qgSize);
+    uint32_t lumaSumCu(Frame* curFrame, uint32_t blockX, uint32_t blockY, uint32_t qgSize);
     uint32_t weightCostLuma(Lowres& fenc, Lowres& ref, WeightParam& wp);
     bool     allocWeightedRef(Lowres& fenc);
 };
@@ -119,6 +120,7 @@ public:
     int           m_cuCount;
     int           m_numCoopSlices;
     int           m_numRowsPerSlice;
+    int           m_inputCount;
     double        m_cuTreeStrength;
 
     bool          m_isActive;
@@ -129,8 +131,9 @@ public:
     bool          m_bBatchFrameCosts;
     bool          m_filled;
     bool          m_isSceneTransition;
+    int           m_numPools;
+    bool          m_extendGopBoundary;
     Lookahead(x265_param *param, ThreadPool *pool);
-
 #if DETAILED_CU_STATS
     int64_t       m_slicetypeDecideElapsedTime;
     int64_t       m_preLookaheadElapsedTime;
@@ -144,11 +147,13 @@ public:
     void    stopJobs();
 
     void    addPicture(Frame&, int sliceType);
+    void    addPicture(Frame& curFrame);
+    void    checkLookaheadQueue(int &frameCnt);
     void    flush();
     Frame*  getDecidedPicture();
 
     void    getEstimatedPictureCost(Frame *pic);
-
+    void    setLookaheadQueue();
 
 protected:
 
@@ -163,7 +168,8 @@ protected:
     int64_t slicetypePathCost(Lowres **frames, char *path, int64_t threshold);
     int64_t vbvFrameCost(Lowres **frames, int p0, int p1, int b);
     void    vbvLookahead(Lowres **frames, int numFrames, int keyframes);
-
+    void    aqMotion(Lowres **frames, bool bintra);
+    void    calcMotionAdaptiveQuantFrame(Lowres **frames, int p0, int p1, int b);
     /* called by slicetypeAnalyse() to effect cuTree adjustments to adaptive
      * quant offsets */
     void    cuTree(Lowres **frames, int numframes, bool bintra);

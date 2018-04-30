@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Gopu Govindaswamy <gopu@multicorewareinc.com>
  *          Steve Borho <steve@borho.org>
@@ -56,22 +56,36 @@ inline uint32_t acEnergyVar(Frame *curFrame, uint64_t sum_ssd, int shift, int pl
 }
 
 /* Find the energy of each block in Y/Cb/Cr plane */
-inline uint32_t acEnergyPlane(Frame *curFrame, pixel* src, intptr_t srcStride, int plane, int colorFormat)
+inline uint32_t acEnergyPlane(Frame *curFrame, pixel* src, intptr_t srcStride, int plane, int colorFormat, uint32_t qgSize)
 {
     if ((colorFormat != X265_CSP_I444) && plane)
     {
-        ALIGN_VAR_8(pixel, pix[8 * 8]);
-        primitives.cu[BLOCK_8x8].copy_pp(pix, 8, src, srcStride);
-        return acEnergyVar(curFrame, primitives.cu[BLOCK_8x8].var(pix, 8), 6, plane);
+        if (qgSize == 8)
+        {
+            ALIGN_VAR_4(pixel, pix[4 * 4]);
+            primitives.cu[BLOCK_4x4].copy_pp(pix, 4, src, srcStride);
+            return acEnergyVar(curFrame, primitives.cu[BLOCK_4x4].var(pix, 4), 4, plane);
+        }
+        else
+        {
+            ALIGN_VAR_8(pixel, pix[8 * 8]);
+            primitives.cu[BLOCK_8x8].copy_pp(pix, 8, src, srcStride);
+            return acEnergyVar(curFrame, primitives.cu[BLOCK_8x8].var(pix, 8), 6, plane);
+        }
     }
     else
-        return acEnergyVar(curFrame, primitives.cu[BLOCK_16x16].var(src, srcStride), 8, plane);
+    {
+        if (qgSize == 8)
+            return acEnergyVar(curFrame, primitives.cu[BLOCK_8x8].var(src, srcStride), 6, plane);
+        else
+            return acEnergyVar(curFrame, primitives.cu[BLOCK_16x16].var(src, srcStride), 8, plane);
+    }
 }
 
 } // end anonymous namespace
 
 /* Find the total AC energy of each block in all planes */
-uint32_t LookaheadTLD::acEnergyCu(Frame* curFrame, uint32_t blockX, uint32_t blockY, int csp)
+uint32_t LookaheadTLD::acEnergyCu(Frame* curFrame, uint32_t blockX, uint32_t blockY, int csp, uint32_t qgSize)
 {
     intptr_t stride = curFrame->m_fencPic->m_stride;
     intptr_t cStride = curFrame->m_fencPic->m_strideC;
@@ -82,14 +96,29 @@ uint32_t LookaheadTLD::acEnergyCu(Frame* curFrame, uint32_t blockX, uint32_t blo
 
     uint32_t var;
 
-    var  = acEnergyPlane(curFrame, curFrame->m_fencPic->m_picOrg[0] + blockOffsetLuma, stride, 0, csp);
+    var  = acEnergyPlane(curFrame, curFrame->m_fencPic->m_picOrg[0] + blockOffsetLuma, stride, 0, csp, qgSize);
     if (csp != X265_CSP_I400 && curFrame->m_fencPic->m_picCsp != X265_CSP_I400)
     {
-        var += acEnergyPlane(curFrame, curFrame->m_fencPic->m_picOrg[1] + blockOffsetChroma, cStride, 1, csp);
-        var += acEnergyPlane(curFrame, curFrame->m_fencPic->m_picOrg[2] + blockOffsetChroma, cStride, 2, csp);
+        var += acEnergyPlane(curFrame, curFrame->m_fencPic->m_picOrg[1] + blockOffsetChroma, cStride, 1, csp, qgSize);
+        var += acEnergyPlane(curFrame, curFrame->m_fencPic->m_picOrg[2] + blockOffsetChroma, cStride, 2, csp, qgSize);
     }
     x265_emms();
     return var;
+}
+/* Find the sum of pixels of each block for luma plane */
+uint32_t LookaheadTLD::lumaSumCu(Frame* curFrame, uint32_t blockX, uint32_t blockY, uint32_t qgSize)
+{
+    intptr_t stride = curFrame->m_fencPic->m_stride;
+    intptr_t blockOffsetLuma = blockX + (blockY * stride);
+    uint64_t sum_ssd;
+
+    if (qgSize == 8)
+        sum_ssd = primitives.cu[BLOCK_8x8].var(curFrame->m_fencPic->m_picOrg[0] + blockOffsetLuma, stride);
+    else
+        sum_ssd = primitives.cu[BLOCK_16x16].var(curFrame->m_fencPic->m_picOrg[0] + blockOffsetLuma, stride);
+
+    x265_emms();
+    return (uint32_t)sum_ssd;
 }
 
 void LookaheadTLD::calcAdaptiveQuantFrame(Frame *curFrame, x265_param* param)
@@ -97,7 +126,22 @@ void LookaheadTLD::calcAdaptiveQuantFrame(Frame *curFrame, x265_param* param)
     /* Actual adaptive quantization */
     int maxCol = curFrame->m_fencPic->m_picWidth;
     int maxRow = curFrame->m_fencPic->m_picHeight;
-    int blockCount = curFrame->m_lowres.maxBlocksInRow * curFrame->m_lowres.maxBlocksInCol;
+    int blockCount, loopIncr;
+    float modeOneConst, modeTwoConst;
+    if (param->rc.qgSize == 8)
+    {
+        blockCount = curFrame->m_lowres.maxBlocksInRowFullRes * curFrame->m_lowres.maxBlocksInColFullRes;
+        modeOneConst = 11.427f;
+        modeTwoConst = 8.f;
+        loopIncr = 8;
+    }
+    else
+    {
+        blockCount = widthInCU * heightInCU;
+        modeOneConst = 14.427f;
+        modeTwoConst = 11.f;
+        loopIncr = 16;
+    }
 
     float* quantOffsets = curFrame->m_quantOffsets;
     for (int y = 0; y < 3; y++)
@@ -106,14 +150,14 @@ void LookaheadTLD::calcAdaptiveQuantFrame(Frame *curFrame, x265_param* param)
         curFrame->m_lowres.wp_sum[y] = 0;
     }
 
-    /* Calculate Qp offset for each 16x16 block in the frame */
+    /* Calculate Qp offset for each 16x16 or 8x8 block in the frame */
     int blockXY = 0;
     int blockX = 0, blockY = 0;
     double strength = 0.f;
-    if (param->rc.aqMode == X265_AQ_NONE || param->rc.aqStrength == 0)
+    if ((param->rc.aqMode == X265_AQ_NONE || param->rc.aqStrength == 0) || (param->rc.bStatRead && param->rc.cuTree && IS_REFERENCED(curFrame)))
     {
         /* Need to init it anyways for CU tree */
-        int cuCount = widthInCU * heightInCU;
+        int cuCount = blockCount;
 
         if (param->rc.aqMode && param->rc.aqStrength == 0)
         {
@@ -134,12 +178,12 @@ void LookaheadTLD::calcAdaptiveQuantFrame(Frame *curFrame, x265_param* param)
             }
         }
 
-        /* Need variance data for weighted prediction */
+        /* Need variance data for weighted prediction and dynamic refinement*/
         if (param->bEnableWeightedPred || param->bEnableWeightedBiPred)
-        {
-            for (blockY = 0; blockY < maxRow; blockY += 16)
-                for (blockX = 0; blockX < maxCol; blockX += 16)
-                    acEnergyCu(curFrame, blockX, blockY, param->internalCsp);
+        {            
+            for (blockY = 0; blockY < maxRow; blockY += loopIncr)
+                for (blockX = 0; blockX < maxCol; blockX += loopIncr)                
+                    acEnergyCu(curFrame, blockX, blockY, param->internalCsp, param->rc.qgSize);                
         }
     }
     else
@@ -152,13 +196,12 @@ void LookaheadTLD::calcAdaptiveQuantFrame(Frame *curFrame, x265_param* param)
             double bit_depth_correction = 1.f / (1 << (2*(X265_DEPTH-8)));
             curFrame->m_lowres.frameVariance = 0;
             uint64_t rowVariance = 0;
-            for (blockY = 0; blockY < maxRow; blockY += 16)
+            for (blockY = 0; blockY < maxRow; blockY += loopIncr)
             {
                 rowVariance = 0;
-                for (blockX = 0; blockX < maxCol; blockX += 16)
+                for (blockX = 0; blockX < maxCol; blockX += loopIncr)
                 {
-                    uint32_t energy = acEnergyCu(curFrame, blockX, blockY, param->internalCsp);
-                    curFrame->m_lowres.blockVariance[blockXY] = energy;
+                    uint32_t energy = acEnergyCu(curFrame, blockX, blockY, param->internalCsp, param->rc.qgSize);
                     rowVariance += energy;
                     qp_adj = pow(energy * bit_depth_correction + 1, 0.1);
                     curFrame->m_lowres.qpCuTreeOffset[blockXY] = qp_adj;
@@ -172,21 +215,21 @@ void LookaheadTLD::calcAdaptiveQuantFrame(Frame *curFrame, x265_param* param)
             avg_adj /= blockCount;
             avg_adj_pow2 /= blockCount;
             strength = param->rc.aqStrength * avg_adj;
-            avg_adj = avg_adj - 0.5f * (avg_adj_pow2 - (11.f)) / avg_adj;
+            avg_adj = avg_adj - 0.5f * (avg_adj_pow2 - (modeTwoConst)) / avg_adj;
             bias_strength = param->rc.aqStrength;
         }
         else
             strength = param->rc.aqStrength * 1.0397f;
 
         blockXY = 0;
-        for (blockY = 0; blockY < maxRow; blockY += 16)
+        for (blockY = 0; blockY < maxRow; blockY += loopIncr)
         {
-            for (blockX = 0; blockX < maxCol; blockX += 16)
+            for (blockX = 0; blockX < maxCol; blockX += loopIncr)
             {
                 if (param->rc.aqMode == X265_AQ_AUTO_VARIANCE_BIASED)
                 {
                     qp_adj = curFrame->m_lowres.qpCuTreeOffset[blockXY];
-                    qp_adj = strength * (qp_adj - avg_adj) + bias_strength * (1.f - 11.f / (qp_adj * qp_adj));
+                    qp_adj = strength * (qp_adj - avg_adj) + bias_strength * (1.f - modeTwoConst / (qp_adj * qp_adj));
                 }
                 else if (param->rc.aqMode == X265_AQ_AUTO_VARIANCE)
                 {
@@ -195,8 +238,32 @@ void LookaheadTLD::calcAdaptiveQuantFrame(Frame *curFrame, x265_param* param)
                 }
                 else
                 {
-                    uint32_t energy = acEnergyCu(curFrame, blockX, blockY, param->internalCsp);
-                    qp_adj = strength * (X265_LOG2(X265_MAX(energy, 1)) - (14.427f + 2 * (X265_DEPTH - 8)));
+                    uint32_t energy = acEnergyCu(curFrame, blockX, blockY, param->internalCsp,param->rc.qgSize);
+                    qp_adj = strength * (X265_LOG2(X265_MAX(energy, 1)) - (modeOneConst + 2 * (X265_DEPTH - 8)));                    
+                }
+
+                if (param->bHDROpt)
+                {
+                    uint32_t sum = lumaSumCu(curFrame, blockX, blockY, param->rc.qgSize);
+                    uint32_t lumaAvg = sum / (loopIncr * loopIncr);
+                    if (lumaAvg < 301)
+                        qp_adj += 3;
+                    else if (lumaAvg >= 301 && lumaAvg < 367)
+                        qp_adj += 2;
+                    else if (lumaAvg >= 367 && lumaAvg < 434)
+                        qp_adj += 1;
+                    else if (lumaAvg >= 501 && lumaAvg < 567)
+                        qp_adj -= 1;
+                    else if (lumaAvg >= 567 && lumaAvg < 634)
+                        qp_adj -= 2;
+                    else if (lumaAvg >= 634 && lumaAvg < 701)
+                        qp_adj -= 3;
+                    else if (lumaAvg >= 701 && lumaAvg < 767)
+                        qp_adj -= 4;
+                    else if (lumaAvg >= 767 && lumaAvg < 834)
+                        qp_adj -= 5;
+                    else if (lumaAvg >= 834)
+                        qp_adj -= 6;
                 }
                 if (quantOffsets != NULL)
                     qp_adj += quantOffsets[blockXY];
@@ -204,6 +271,21 @@ void LookaheadTLD::calcAdaptiveQuantFrame(Frame *curFrame, x265_param* param)
                 curFrame->m_lowres.qpCuTreeOffset[blockXY] = qp_adj;
                 curFrame->m_lowres.invQscaleFactor[blockXY] = x265_exp2fix8(qp_adj);
                 blockXY++;
+            }
+        }
+    }
+
+    if (param->rc.qgSize == 8)
+    {
+        for (int cuY = 0; cuY < heightInCU; cuY++)
+        {
+            for (int cuX = 0; cuX < widthInCU; cuX++)
+            {
+                const int cuXY = cuX + cuY * widthInCU;
+                curFrame->m_lowres.invQscaleFactor8x8[cuXY] = (curFrame->m_lowres.invQscaleFactor[cuX * 2 + cuY * widthInCU * 4] +
+                                                               curFrame->m_lowres.invQscaleFactor[cuX * 2 + cuY * widthInCU * 4 + 1] +
+                                                               curFrame->m_lowres.invQscaleFactor[cuX * 2 + cuY * widthInCU * 4 + curFrame->m_lowres.maxBlocksInRowFullRes] +
+                                                               curFrame->m_lowres.invQscaleFactor[cuX * 2 + cuY * widthInCU * 4 + curFrame->m_lowres.maxBlocksInRowFullRes + 1]) / 4;
             }
         }
     }
@@ -225,9 +307,20 @@ void LookaheadTLD::calcAdaptiveQuantFrame(Frame *curFrame, x265_param* param)
             curFrame->m_lowres.wp_ssd[i] = ssd - (sum * sum + (width[i] * height[i]) / 2) / (width[i] * height[i]);
         }
     }
+
+    if (param->bDynamicRefine)
+    {
+        blockXY = 0;
+        for (blockY = 0; blockY < maxRow; blockY += loopIncr)
+            for (blockX = 0; blockX < maxCol; blockX += loopIncr)
+            {
+                curFrame->m_lowres.blockVariance[blockXY] = acEnergyCu(curFrame, blockX, blockY, param->internalCsp, param->rc.qgSize);
+                blockXY++;
+            }
+    }
 }
 
-void LookaheadTLD::lowresIntraEstimate(Lowres& fenc)
+void LookaheadTLD::lowresIntraEstimate(Lowres& fenc, uint32_t qgSize)
 {
     ALIGN_VAR_32(pixel, prediction[X265_LOWRES_CU_SIZE * X265_LOWRES_CU_SIZE]);
     pixel fencIntra[X265_LOWRES_CU_SIZE * X265_LOWRES_CU_SIZE];
@@ -314,12 +407,15 @@ void LookaheadTLD::lowresIntraEstimate(Lowres& fenc)
             fenc.lowresCosts[0][0][cuXY] = (uint16_t)(X265_MIN(icost, LOWRES_COST_MASK) | (0 << LOWRES_COST_SHIFT));
             fenc.intraCost[cuXY] = icost;
             fenc.intraMode[cuXY] = (uint8_t)ilowmode;
-
-            /* do not include edge blocks in the frame cost estimates, they are not very accurate */
+            /* do not include edge blocks in the 
+            frame cost estimates, they are not very accurate */
             const bool bFrameScoreCU = (cuX > 0 && cuX < widthInCU - 1 &&
                                         cuY > 0 && cuY < heightInCU - 1) || widthInCU <= 2 || heightInCU <= 2;
-
-            int icostAq = (bFrameScoreCU && fenc.invQscaleFactor) ? ((icost * fenc.invQscaleFactor[cuXY] + 128) >> 8) : icost;
+            int icostAq;
+            if (qgSize == 8)
+                icostAq = (bFrameScoreCU && fenc.invQscaleFactor) ? ((icost * fenc.invQscaleFactor8x8[cuXY] + 128) >> 8) : icost;
+            else
+                icostAq = (bFrameScoreCU && fenc.invQscaleFactor) ? ((icost * fenc.invQscaleFactor[cuXY] +128) >> 8) : icost;
 
             if (bFrameScoreCU)
             {
@@ -502,7 +598,8 @@ Lookahead::Lookahead(x265_param *param, ThreadPool* pool)
     m_filled   = false;
     m_outputSignalRequired = false;
     m_isActive = true;
-
+    m_inputCount = 0;
+    m_extendGopBoundary = false;
     m_8x8Height = ((m_param->sourceHeight / 2) + X265_LOWRES_CU_SIZE - 1) >> X265_LOWRES_CU_BITS;
     m_8x8Width = ((m_param->sourceWidth / 2) + X265_LOWRES_CU_SIZE - 1) >> X265_LOWRES_CU_BITS;
     m_cuCount = m_8x8Width * m_8x8Height;
@@ -516,7 +613,7 @@ Lookahead::Lookahead(x265_param *param, ThreadPool* pool)
     m_lastKeyframe = -m_param->keyframeMax;
     m_sliceTypeBusy = false;
     m_fullQueueSize = X265_MAX(1, m_param->lookaheadDepth);
-    m_bAdaptiveQuant = m_param->rc.aqMode || m_param->bEnableWeightedPred || m_param->bEnableWeightedBiPred;
+    m_bAdaptiveQuant = m_param->rc.aqMode || m_param->bEnableWeightedPred || m_param->bEnableWeightedBiPred || m_param->bAQMotion;
 
     /* If we have a thread pool and are using --b-adapt 2, it is generally
      * preferable to perform all motion searches for each lowres frame in large
@@ -559,7 +656,11 @@ Lookahead::Lookahead(x265_param *param, ThreadPool* pool)
         m_numRowsPerSlice = m_8x8Height;
         m_numCoopSlices = 1;
     }
-
+    if (param->gopLookahead && (param->gopLookahead > (param->lookaheadDepth - param->bframes - 2)))
+    {
+        param->gopLookahead = X265_MAX(0, param->lookaheadDepth - param->bframes - 2);
+        x265_log(param, X265_LOG_WARNING, "Gop-lookahead cannot be greater than (rc-lookahead - length of the mini-gop); Clipping gop-lookahead to %d\n", param->gopLookahead);
+    }
 #if DETAILED_CU_STATS
     m_slicetypeDecideElapsedTime = 0;
     m_preLookaheadElapsedTime = 0;
@@ -609,8 +710,12 @@ void Lookahead::stopJobs()
         if (wait)
             m_outputSignal.wait();
     }
+    if (m_pool && m_param->lookaheadThreads > 0)
+    {
+        for (int i = 0; i < m_numPools; i++)
+            m_pool[i].stopWorkers();
+    }
 }
-
 void Lookahead::destroy()
 {
     // these two queues will be empty unless the encode was aborted
@@ -629,10 +734,10 @@ void Lookahead::destroy()
     }
 
     X265_FREE(m_scratch);
-
     delete [] m_tld;
+    if (m_param->lookaheadThreads > 0)
+        delete [] m_pool;
 }
-
 /* The synchronization of slicetypeDecide is managed here.  The findJob() method
  * polls the occupancy of the input queue. If the queue is
  * full, it will run slicetypeDecide() and output a mini-gop of frames to the
@@ -651,20 +756,44 @@ void Lookahead::destroy()
 /* Called by API thread */
 void Lookahead::addPicture(Frame& curFrame, int sliceType)
 {
-    curFrame.m_lowres.sliceType = sliceType;
+    if (m_param->analysisLoad && m_param->bDisableLookahead)
+    {
+        if (!m_filled)
+            m_filled = true;
+        m_outputLock.acquire();
+        m_outputQueue.pushBack(curFrame);
+        m_outputLock.release();
+        m_inputCount++;
+    }
+    else
+    {
+        checkLookaheadQueue(m_inputCount);
+        curFrame.m_lowres.sliceType = sliceType;
+        addPicture(curFrame);
+    }
+}
 
+void Lookahead::addPicture(Frame& curFrame)
+{
+    m_inputLock.acquire();
+    m_inputQueue.pushBack(curFrame);
+    m_inputLock.release();
+    m_inputCount++;
+}
+
+void Lookahead::checkLookaheadQueue(int &frameCnt)
+{
     /* determine if the lookahead is (over) filled enough for frames to begin to
      * be consumed by frame encoders */
     if (!m_filled)
     {
         if (!m_param->bframes & !m_param->lookaheadDepth)
             m_filled = true; /* zero-latency */
-        else if (curFrame.m_poc >= m_param->lookaheadDepth + 2 + m_param->bframes)
+        else if (frameCnt >= m_param->lookaheadDepth + 2 + m_param->bframes)
             m_filled = true; /* full capacity plus mini-gop lag */
     }
 
     m_inputLock.acquire();
-    m_inputQueue.pushBack(curFrame);
     if (m_pool && m_inputQueue.size() >= m_fullQueueSize)
         tryWakeOne();
     m_inputLock.release();
@@ -676,6 +805,12 @@ void Lookahead::flush()
     /* force slicetypeDecide to run until the input queue is empty */
     m_fullQueueSize = 1;
     m_filled = true;
+}
+
+void Lookahead::setLookaheadQueue()
+{
+    m_filled = false;
+    m_fullQueueSize = X265_MAX(1, m_param->lookaheadDepth);
 }
 
 void Lookahead::findJob(int /*workerThreadID*/)
@@ -717,7 +852,13 @@ Frame* Lookahead::getDecidedPicture()
         m_outputLock.release();
 
         if (out)
+        {
+            m_inputCount--;
             return out;
+        }
+
+        if (m_param->analysisLoad && m_param->bDisableLookahead)
+            return NULL;
 
         findJob(-1); /* run slicetypeDecide() if necessary */
 
@@ -728,7 +869,10 @@ Frame* Lookahead::getDecidedPicture()
         if (wait)
             m_outputSignal.wait();
 
-        return m_outputQueue.popFront();
+        out = m_outputQueue.popFront();
+        if (out)
+            m_inputCount--;
+        return out;
     }
     else
         return NULL;
@@ -745,7 +889,7 @@ void Lookahead::getEstimatedPictureCost(Frame *curFrame)
     Slice *slice = curFrame->m_encData->m_slice;
     int p0 = 0, p1, b;
     int poc = slice->m_poc;
-    int l0poc = slice->m_refPOCList[0][0];
+    int l0poc = slice->m_rps.numberOfNegativePictures ? slice->m_refPOCList[0][0] : -1;
     int l1poc = slice->m_refPOCList[1][0];
 
     switch (slice->m_sliceType)
@@ -762,70 +906,89 @@ void Lookahead::getEstimatedPictureCost(Frame *curFrame)
         break;
 
     case B_SLICE:
-        b = poc - l0poc;
-        p1 = b + l1poc - poc;
-        frames[p0] = &slice->m_refFrameList[0][0]->m_lowres;
-        frames[b] = &curFrame->m_lowres;
-        frames[p1] = &slice->m_refFrameList[1][0]->m_lowres;
+        if (l0poc >= 0)
+        {
+            b = poc - l0poc;
+            p1 = b + l1poc - poc;
+            frames[p0] = &slice->m_refFrameList[0][0]->m_lowres;
+            frames[b] = &curFrame->m_lowres;
+            frames[p1] = &slice->m_refFrameList[1][0]->m_lowres;
+        }
+        else 
+        {
+            p0 = b = 0;
+            p1 = b + l1poc - poc;
+            frames[p0] = frames[b] = &curFrame->m_lowres;
+            frames[p1] = &slice->m_refFrameList[1][0]->m_lowres;
+        }
+        
         break;
 
     default:
         return;
     }
-
-    X265_CHECK(curFrame->m_lowres.costEst[b - p0][p1 - b] > 0, "Slice cost not estimated\n")
-
-    if (m_param->rc.cuTree && !m_param->rc.bStatRead)
-        /* update row satds based on cutree offsets */
-        curFrame->m_lowres.satdCost = frameCostRecalculate(frames, p0, p1, b);
-    else if (m_param->analysisMode != X265_ANALYSIS_LOAD)
+    if (!m_param->analysisLoad || !m_param->bDisableLookahead)
     {
-        if (m_param->rc.aqMode)
-            curFrame->m_lowres.satdCost = curFrame->m_lowres.costEstAq[b - p0][p1 - b];
-        else
-            curFrame->m_lowres.satdCost = curFrame->m_lowres.costEst[b - p0][p1 - b];
-    }
-
-    if (m_param->rc.vbvBufferSize && m_param->rc.vbvMaxBitrate)
-    {
-        /* aggregate lowres row satds to CTU resolution */
-        curFrame->m_lowres.lowresCostForRc = curFrame->m_lowres.lowresCosts[b - p0][p1 - b];
-        uint32_t lowresRow = 0, lowresCol = 0, lowresCuIdx = 0, sum = 0, intraSum = 0;
-        uint32_t scale = m_param->maxCUSize / (2 * X265_LOWRES_CU_SIZE);
-        uint32_t numCuInHeight = (m_param->sourceHeight + g_maxCUSize - 1) / g_maxCUSize;
-        uint32_t widthInLowresCu = (uint32_t)m_8x8Width, heightInLowresCu = (uint32_t)m_8x8Height;
-        double *qp_offset = 0;
-        /* Factor in qpoffsets based on Aq/Cutree in CU costs */
-        if (m_param->rc.aqMode)
-            qp_offset = (frames[b]->sliceType == X265_TYPE_B || !m_param->rc.cuTree) ? frames[b]->qpAqOffset : frames[b]->qpCuTreeOffset;
-
-        for (uint32_t row = 0; row < numCuInHeight; row++)
+        X265_CHECK(curFrame->m_lowres.costEst[b - p0][p1 - b] > 0, "Slice cost not estimated\n")
+        if (m_param->rc.cuTree && !m_param->rc.bStatRead)
+            /* update row satds based on cutree offsets */
+            curFrame->m_lowres.satdCost = frameCostRecalculate(frames, p0, p1, b);
+        else if (!m_param->analysisLoad || m_param->scaleFactor)
         {
-            lowresRow = row * scale;
-            for (uint32_t cnt = 0; cnt < scale && lowresRow < heightInLowresCu; lowresRow++, cnt++)
+            if (m_param->rc.aqMode)
+                curFrame->m_lowres.satdCost = curFrame->m_lowres.costEstAq[b - p0][p1 - b];
+            else
+                curFrame->m_lowres.satdCost = curFrame->m_lowres.costEst[b - p0][p1 - b];
+        }
+        if (m_param->rc.vbvBufferSize && m_param->rc.vbvMaxBitrate)
+        {
+            /* aggregate lowres row satds to CTU resolution */
+            curFrame->m_lowres.lowresCostForRc = curFrame->m_lowres.lowresCosts[b - p0][p1 - b];
+            uint32_t lowresRow = 0, lowresCol = 0, lowresCuIdx = 0, sum = 0, intraSum = 0;
+            uint32_t scale = m_param->maxCUSize / (2 * X265_LOWRES_CU_SIZE);
+            uint32_t numCuInHeight = (m_param->sourceHeight + m_param->maxCUSize - 1) / m_param->maxCUSize;
+            uint32_t widthInLowresCu = (uint32_t)m_8x8Width, heightInLowresCu = (uint32_t)m_8x8Height;
+            double *qp_offset = 0;
+            /* Factor in qpoffsets based on Aq/Cutree in CU costs */
+            if (m_param->rc.aqMode || m_param->bAQMotion)
+                qp_offset = (frames[b]->sliceType == X265_TYPE_B || !m_param->rc.cuTree) ? frames[b]->qpAqOffset : frames[b]->qpCuTreeOffset;
+
+            for (uint32_t row = 0; row < numCuInHeight; row++)
             {
-                sum = 0; intraSum = 0;
-                int diff = 0;
-                lowresCuIdx = lowresRow * widthInLowresCu;
-                for (lowresCol = 0; lowresCol < widthInLowresCu; lowresCol++, lowresCuIdx++)
+                lowresRow = row * scale;
+                for (uint32_t cnt = 0; cnt < scale && lowresRow < heightInLowresCu; lowresRow++, cnt++)
                 {
-                    uint16_t lowresCuCost = curFrame->m_lowres.lowresCostForRc[lowresCuIdx] & LOWRES_COST_MASK;
-                    if (qp_offset)
+                    sum = 0; intraSum = 0;
+                    int diff = 0;
+                    lowresCuIdx = lowresRow * widthInLowresCu;
+                    for (lowresCol = 0; lowresCol < widthInLowresCu; lowresCol++, lowresCuIdx++)
                     {
-                        lowresCuCost = (uint16_t)((lowresCuCost * x265_exp2fix8(qp_offset[lowresCuIdx]) + 128) >> 8);
-                        int32_t intraCuCost = curFrame->m_lowres.intraCost[lowresCuIdx];
-                        curFrame->m_lowres.intraCost[lowresCuIdx] = (intraCuCost * x265_exp2fix8(qp_offset[lowresCuIdx]) + 128) >> 8;
+                        uint16_t lowresCuCost = curFrame->m_lowres.lowresCostForRc[lowresCuIdx] & LOWRES_COST_MASK;
+                        if (qp_offset)
+                        {
+                            double qpOffset;
+                            if (m_param->rc.qgSize == 8)
+                                qpOffset = (qp_offset[lowresCol * 2 + lowresRow * widthInLowresCu * 4] +
+                                qp_offset[lowresCol * 2 + lowresRow * widthInLowresCu * 4 + 1] +
+                                qp_offset[lowresCol * 2 + lowresRow * widthInLowresCu * 4 + curFrame->m_lowres.maxBlocksInRowFullRes] +
+                                qp_offset[lowresCol * 2 + lowresRow * widthInLowresCu * 4 + curFrame->m_lowres.maxBlocksInRowFullRes + 1]) / 4;
+                            else
+                                qpOffset = qp_offset[lowresCuIdx];
+                            lowresCuCost = (uint16_t)((lowresCuCost * x265_exp2fix8(qpOffset) + 128) >> 8);
+                            int32_t intraCuCost = curFrame->m_lowres.intraCost[lowresCuIdx];
+                            curFrame->m_lowres.intraCost[lowresCuIdx] = (intraCuCost * x265_exp2fix8(qpOffset) + 128) >> 8;
+                        }
+                        if (m_param->bIntraRefresh && slice->m_sliceType == X265_TYPE_P)
+                            for (uint32_t x = curFrame->m_encData->m_pir.pirStartCol; x <= curFrame->m_encData->m_pir.pirEndCol; x++)
+                                diff += curFrame->m_lowres.intraCost[lowresCuIdx] - lowresCuCost;
+                        curFrame->m_lowres.lowresCostForRc[lowresCuIdx] = lowresCuCost;
+                        sum += lowresCuCost;
+                        intraSum += curFrame->m_lowres.intraCost[lowresCuIdx];
                     }
-                    if (m_param->bIntraRefresh && slice->m_sliceType == X265_TYPE_P)
-                        for (uint32_t x = curFrame->m_encData->m_pir.pirStartCol; x <= curFrame->m_encData->m_pir.pirEndCol; x++)
-                            diff += curFrame->m_lowres.intraCost[lowresCuIdx] - lowresCuCost;
-                    curFrame->m_lowres.lowresCostForRc[lowresCuIdx] = lowresCuCost;
-                    sum += lowresCuCost;
-                    intraSum += curFrame->m_lowres.intraCost[lowresCuIdx];
+                    curFrame->m_encData->m_rowStat[row].satdForVbv += sum;
+                    curFrame->m_encData->m_rowStat[row].satdForVbv += diff;
+                    curFrame->m_encData->m_rowStat[row].intraSatdForVbv += intraSum;
                 }
-                curFrame->m_encData->m_rowStat[row].satdForVbv += sum;
-                curFrame->m_encData->m_rowStat[row].satdForVbv += diff;
-                curFrame->m_encData->m_rowStat[row].intraSatdForVbv += intraSum;
             }
         }
     }
@@ -844,13 +1007,10 @@ void PreLookaheadGroup::processTasks(int workerThreadID)
         ProfileLookaheadTime(m_lookahead.m_preLookaheadElapsedTime, m_lookahead.m_countPreLookahead);
         ProfileScopeEvent(prelookahead);
         m_lock.release();
-
         preFrame->m_lowres.init(preFrame->m_fencPic, preFrame->m_poc);
-        if (m_lookahead.m_param->rc.bStatRead && m_lookahead.m_param->rc.cuTree && IS_REFERENCED(preFrame))
-            /* cu-tree offsets were read from stats file */;
-        else if (m_lookahead.m_bAdaptiveQuant)
+        if (m_lookahead.m_bAdaptiveQuant)
             tld.calcAdaptiveQuantFrame(preFrame, m_lookahead.m_param);
-        tld.lowresIntraEstimate(preFrame->m_lowres);
+        tld.lowresIntraEstimate(preFrame->m_lowres, m_lookahead.m_param->rc.qgSize);
         preFrame->m_lowresInit = true;
 
         m_lock.acquire();
@@ -913,6 +1073,18 @@ void Lookahead::slicetypeDecide()
          (m_param->lookaheadDepth && m_param->rc.vbvBufferSize)))
     {
         slicetypeAnalyse(frames, false);
+        bool bIsVbv = m_param->rc.vbvBufferSize > 0 && m_param->rc.vbvMaxBitrate > 0;
+        if (m_param->analysisLoad && m_param->scaleFactor && bIsVbv)
+        {
+            int numFrames;
+            for (numFrames = 0; numFrames < maxSearch; numFrames++)
+            {
+                Lowres *fenc = frames[numFrames + 1];
+                if (!fenc)
+                    break;
+            }
+            vbvLookahead(frames, numFrames, true);
+        }
     }
 
     int bframes, brefs;
@@ -936,7 +1108,8 @@ void Lookahead::slicetypeDecide()
             x265_log(m_param, X265_LOG_WARNING, "B-ref at frame %d incompatible with B-pyramid and %d reference frames\n",
                      frm.sliceType, m_param->maxNumReferences);
         }
-        if ((!m_param->bIntraRefresh || frm.frameNum == 0) && frm.frameNum - m_lastKeyframe >= m_param->keyframeMax)
+        if ((!m_param->bIntraRefresh || frm.frameNum == 0) && frm.frameNum - m_lastKeyframe >= m_param->keyframeMax &&
+            (!m_extendGopBoundary || frm.frameNum - m_lastKeyframe >= m_param->keyframeMax + m_param->gopLookahead))
         {
             if (frm.sliceType == X265_TYPE_AUTO || frm.sliceType == X265_TYPE_I)
                 frm.sliceType = m_param->bOpenGOP && m_lastKeyframe >= 0 ? X265_TYPE_I : X265_TYPE_IDR;
@@ -965,12 +1138,20 @@ void Lookahead::slicetypeDecide()
             /* Closed GOP */
             m_lastKeyframe = frm.frameNum;
             frm.bKeyframe = true;
-            if (bframes > 0)
+            if (bframes > 0 && !m_param->radl)
             {
                 list[bframes - 1]->m_lowres.sliceType = X265_TYPE_P;
                 bframes--;
             }
         }
+        if (m_param->radl && !m_param->bOpenGOP && list[bframes + 1])
+        {
+            if ((frm.frameNum - m_lastKeyframe) >  (m_param->keyframeMax - m_param->radl - 1) && (frm.frameNum - m_lastKeyframe) <  m_param->keyframeMax)
+                frm.sliceType = X265_TYPE_B;
+            if ((frm.frameNum - m_lastKeyframe) == (m_param->keyframeMax - m_param->radl - 1))
+                frm.sliceType = X265_TYPE_P;
+        }
+
         if (bframes == m_param->bframes || !list[bframes + 1])
         {
             if (IS_X265_TYPE_B(frm.sliceType))
@@ -1020,8 +1201,13 @@ void Lookahead::slicetypeDecide()
         if (bframes)
         {
             p0 = 0; // last nonb
+            bool isp0available = frames[bframes + 1]->sliceType == X265_TYPE_IDR ? false : true;
+
             for (b = 1; b <= bframes; b++)
             {
+                if (!isp0available)
+                    p0 = b;
+
                 if (frames[b]->sliceType == X265_TYPE_B)
                     for (p1 = b; frames[p1]->sliceType == X265_TYPE_B; p1++)
                         ; // find new nonb or bref
@@ -1031,7 +1217,10 @@ void Lookahead::slicetypeDecide()
                 estGroup.singleCost(p0, p1, b);
 
                 if (frames[b]->sliceType == X265_TYPE_BREF)
+                {
                     p0 = b;
+                    isp0available = true;
+                }
             }
         }
     }
@@ -1055,9 +1244,8 @@ void Lookahead::slicetypeDecide()
     int idx = 0;
     list[bframes]->m_reorderedPts = pts[idx++];
     m_outputQueue.pushBack(*list[bframes]);
-
     /* Add B-ref frame next to P frame in output queue, the B-ref encode before non B-ref frame */
-    if (bframes > 1 && m_param->bBPyramid)
+    if (brefs)
     {
         for (int i = 0; i < bframes; i++)
         {
@@ -1096,6 +1284,18 @@ void Lookahead::slicetypeDecide()
 
         frames[j + 1] = NULL;
         slicetypeAnalyse(frames, true);
+        bool bIsVbv = m_param->rc.vbvBufferSize > 0 && m_param->rc.vbvMaxBitrate > 0;
+        if (m_param->analysisLoad && m_param->scaleFactor && bIsVbv)
+        {
+            int numFrames;
+            for (numFrames = 0; numFrames < maxSearch; numFrames++)
+            {
+                Lowres *fenc = frames[numFrames + 1];
+                if (!fenc)
+                    break;
+            }
+            vbvLookahead(frames, numFrames, true);
+        }
     }
     m_outputLock.release();
 }
@@ -1182,7 +1382,7 @@ int64_t Lookahead::vbvFrameCost(Lowres **frames, int p0, int p1, int b)
     CostEstimateGroup estGroup(*this, frames);
     int64_t cost = estGroup.singleCost(p0, p1, b);
 
-    if (m_param->rc.aqMode)
+    if (m_param->rc.aqMode || m_param->bAQMotion)
     {
         if (m_param->rc.cuTree)
             return frameCostRecalculate(frames, p0, p1, b);
@@ -1215,12 +1415,14 @@ void Lookahead::slicetypeAnalyse(Lowres **frames, bool bKeyframe)
             cuTree(frames, 0, bKeyframe);
         return;
     }
-
     frames[framecnt + 1] = NULL;
+    int keyFrameLimit = m_param->keyframeMax + m_lastKeyframe - frames[0]->frameNum - 1;
+    if (m_param->gopLookahead && keyFrameLimit <= m_param->bframes + 1)
+        keyintLimit = keyFrameLimit + m_param->gopLookahead;
+    else
+        keyintLimit = keyFrameLimit;
 
-    keyintLimit = m_param->keyframeMax - frames[0]->frameNum + m_lastKeyframe - 1;
     origNumFrames = numFrames = m_param->bIntraRefresh ? framecnt : X265_MIN(framecnt, keyintLimit);
-
     if (bIsVbvLookahead)
         numFrames = framecnt;
     else if (m_param->bOpenGOP && numFrames < framecnt)
@@ -1244,12 +1446,12 @@ void Lookahead::slicetypeAnalyse(Lowres **frames, bool bKeyframe)
                     continue;
 
                 /* Skip search if already done */
-                if (frames[b]->lowresMvs[0][i - 1][0].x != 0x7FFF)
+                if (frames[b]->lowresMvs[0][i][0].x != 0x7FFF)
                     continue;
 
                 /* perform search to p1 at same distance, if possible */
                 int p1 = b + i;
-                if (p1 >= numFrames || frames[b]->lowresMvs[1][i - 1][0].x != 0x7FFF)
+                if (p1 >= numFrames || frames[b]->lowresMvs[1][i][0].x != 0x7FFF)
                     p1 = b;
 
                 estGroup.add(p0, p1, b);
@@ -1271,7 +1473,7 @@ void Lookahead::slicetypeAnalyse(Lowres **frames, bool bKeyframe)
 
                     /* only measure frame cost in this pass if motion searches
                      * are already done */
-                    if (frames[b]->lowresMvs[0][i - 1][0].x == 0x7FFF)
+                    if (frames[b]->lowresMvs[0][i][0].x == 0x7FFF)
                         continue;
 
                     int p0 = b - i;
@@ -1283,7 +1485,7 @@ void Lookahead::slicetypeAnalyse(Lowres **frames, bool bKeyframe)
                             break;
 
                         /* ensure P1 search is done */
-                        if (j && frames[b]->lowresMvs[1][j - 1][0].x == 0x7FFF)
+                        if (j && frames[b]->lowresMvs[1][j][0].x == 0x7FFF)
                             continue;
 
                         /* ensure frame cost is not done */
@@ -1310,7 +1512,26 @@ void Lookahead::slicetypeAnalyse(Lowres **frames, bool bKeyframe)
         frames[1]->sliceType = X265_TYPE_I;
         return;
     }
-
+    if (m_param->gopLookahead && (keyFrameLimit >= 0) && (keyFrameLimit <= m_param->bframes + 1))
+    {
+        bool sceneTransition = m_isSceneTransition;
+        m_extendGopBoundary = false;
+        for (int i = m_param->bframes + 1; i < origNumFrames; i += m_param->bframes + 1)
+        {
+            scenecut(frames, i, i + 1, true, origNumFrames);
+            for (int j = i + 1; j <= X265_MIN(i + m_param->bframes + 1, origNumFrames); j++)
+            {
+                if (frames[j]->bScenecut && scenecutInternal(frames, j - 1, j, true) )
+                {
+                    m_extendGopBoundary = true;
+                    break;
+                }
+            }
+            if (m_extendGopBoundary)
+                break;
+        }
+        m_isSceneTransition = sceneTransition;
+    }
     if (m_param->bframes)
     {
         if (m_param->bFrameAdaptive == X265_B_ADAPT_TRELLIS)
@@ -1411,9 +1632,13 @@ void Lookahead::slicetypeAnalyse(Lowres **frames, bool bKeyframe)
 
         resetStart = bKeyframe ? 1 : 2;
     }
+    if (m_param->bAQMotion)
+        aqMotion(frames, bKeyframe);
 
     if (m_param->rc.cuTree)
         cuTree(frames, X265_MIN(numFrames, m_param->keyframeMax), bKeyframe);
+    if (m_param->gopLookahead && (keyFrameLimit >= 0) && (keyFrameLimit <= m_param->bframes + 1) && !m_extendGopBoundary)
+        keyintLimit = keyFrameLimit;
 
     if (!m_param->bIntraRefresh)
         for (int j = keyintLimit + 1; j <= numFrames; j += m_param->keyframeMax)
@@ -1424,8 +1649,8 @@ void Lookahead::slicetypeAnalyse(Lowres **frames, bool bKeyframe)
 
     if (bIsVbvLookahead)
         vbvLookahead(frames, numFrames, bKeyframe);
+    int maxp1 = X265_MIN(m_param->bframes + 1, origNumFrames);
 
-     int maxp1 = X265_MIN(m_param->bframes + 1, origNumFrames);
     /* Restore frame types for all frames that haven't actually been decided yet. */
     for (int j = resetStart; j <= numFrames; j++)
     {
@@ -1449,8 +1674,8 @@ bool Lookahead::scenecut(Lowres **frames, int p0, int p1, bool bRealScenecut, in
         bool fluctuate = false;
         bool noScenecuts = false;
         int64_t avgSatdCost = 0;
-        if (frames[0]->costEst[1][0] > -1)
-            avgSatdCost = frames[0]->costEst[1][0];
+        if (frames[p0]->costEst[p1 - p0][0] > -1)
+            avgSatdCost = frames[p0]->costEst[p1 - p0][0];
         int cnt = 1;
         /* Where A and B are scenes: AAAAAABBBAAAAAA
          * If BBB is shorter than (maxp1-p0), it is detected as a flash
@@ -1513,6 +1738,13 @@ bool Lookahead::scenecut(Lowres **frames, int p0, int p1, bool bRealScenecut, in
             m_isSceneTransition = false; /* Signal end of scene transitioning */
     }
 
+    if (m_param->csvLogLevel >= 2)
+    {
+        int64_t icost = frames[p1]->costEst[0][0];
+        int64_t pcost = frames[p1]->costEst[p1 - p0][0];
+        frames[p1]->ipCostRatio = (double)icost / pcost;
+    }
+
     /* A frame is always analysed with bRealScenecut = true first, and then bRealScenecut = false,
        the former for I decisions and the latter for P/B decisions. It's possible that the first 
        analysis detected scenecuts which were later nulled due to scene transitioning, in which 
@@ -1529,15 +1761,13 @@ bool Lookahead::scenecutInternal(Lowres **frames, int p0, int p1, bool bRealScen
 
     CostEstimateGroup estGroup(*this, frames);
     estGroup.singleCost(p0, p1, p1);
-
     int64_t icost = frame->costEst[0][0];
     int64_t pcost = frame->costEst[p1 - p0][0];
-    int gopSize = frame->frameNum - m_lastKeyframe;
+    int gopSize = (frame->frameNum - m_lastKeyframe) % m_param->keyframeMax;
     float threshMax = (float)(m_param->scenecutThreshold / 100.0);
-
     /* magic numbers pulled out of thin air */
     float threshMin = (float)(threshMax * 0.25);
-    double bias = 0.05;
+    double bias = m_param->scenecutBias;
     if (bRealScenecut)
     {
         if (m_param->keyframeMin == m_param->keyframeMax)
@@ -1640,6 +1870,89 @@ int64_t Lookahead::slicetypePathCost(Lowres **frames, char *path, int64_t thresh
 
     return cost;
 }
+void Lookahead::aqMotion(Lowres **frames, bool bIntra)
+{
+    if (!bIntra)
+    {
+        int curnonb = 0, lastnonb = 1;
+        int bframes = 0, i = 1;
+        while (frames[lastnonb]->sliceType != X265_TYPE_P)
+            lastnonb++;
+        bframes = lastnonb - 1;
+        if (m_param->bBPyramid && bframes > 1)
+        {
+            int middle = (bframes + 1) / 2;
+            for (i = 1; i < lastnonb; i++)
+            {
+                int p0 = i > middle ? middle : curnonb;
+                int p1 = i < middle ? middle : lastnonb;
+                if (i != middle)
+                    calcMotionAdaptiveQuantFrame(frames, p0, p1, i);
+            }
+            calcMotionAdaptiveQuantFrame(frames, curnonb, lastnonb, middle);
+        }
+        else
+            for (i = 1; i < lastnonb; i++)
+                calcMotionAdaptiveQuantFrame(frames, curnonb, lastnonb, i);
+        calcMotionAdaptiveQuantFrame(frames, curnonb, lastnonb, lastnonb);
+    }
+}
+
+void Lookahead::calcMotionAdaptiveQuantFrame(Lowres **frames, int p0, int p1, int b)
+{
+    int listDist[2] = { b - p0, p1 - b };
+    int32_t strideInCU = m_8x8Width;
+    double qp_adj = 0, avg_adj = 0, avg_adj_pow2 = 0, sd;
+    for (uint16_t blocky = 0; blocky < m_8x8Height; blocky++)
+    {
+        int cuIndex = blocky * strideInCU;
+        for (uint16_t blockx = 0; blockx < m_8x8Width; blockx++, cuIndex++)
+        {
+            int32_t lists_used = frames[b]->lowresCosts[b - p0][p1 - b][cuIndex] >> LOWRES_COST_SHIFT;
+            double displacement = 0;
+            for (uint16_t list = 0; list < 2; list++)
+            {
+                if ((lists_used >> list) & 1)
+                {
+                    MV *mvs = frames[b]->lowresMvs[list][listDist[list]];
+                    int32_t x = mvs[cuIndex].x;
+                    int32_t y = mvs[cuIndex].y;
+                    // NOTE: the dynamic range of abs(x) and abs(y) is 15-bits
+                    displacement += sqrt((double)(abs(x) * abs(x)) + (double)(abs(y) * abs(y)));
+                }
+                else
+                    displacement += 0.0;
+            }
+            if (lists_used == 3)
+                displacement = displacement / 2;
+            qp_adj = pow(displacement, 0.1);
+            frames[b]->qpAqMotionOffset[cuIndex] = qp_adj;
+            avg_adj += qp_adj;
+            avg_adj_pow2 += qp_adj * qp_adj;
+        }
+    }
+    avg_adj /= m_cuCount;
+    avg_adj_pow2 /= m_cuCount;
+    sd = sqrt((avg_adj_pow2 - (avg_adj * avg_adj)));
+    if (sd > 0)
+    {
+        for (uint16_t blocky = 0; blocky < m_8x8Height; blocky++)
+        {
+            int cuIndex = blocky * strideInCU;
+            for (uint16_t blockx = 0; blockx < m_8x8Width; blockx++, cuIndex++)
+            {
+                qp_adj = frames[b]->qpAqMotionOffset[cuIndex];
+                qp_adj = (qp_adj - avg_adj) / sd;
+                if (qp_adj > 1)
+                {
+                    frames[b]->qpAqOffset[cuIndex] += qp_adj;
+                    frames[b]->qpCuTreeOffset[cuIndex] += qp_adj;
+                    frames[b]->invQscaleFactor[cuIndex] += x265_exp2fix8(qp_adj);
+                }
+            }
+        }
+    }
+}
 
 void Lookahead::cuTree(Lowres **frames, int numframes, bool bIntra)
 {
@@ -1669,7 +1982,10 @@ void Lookahead::cuTree(Lowres **frames, int numframes, bool bIntra)
         if (bIntra)
         {
             memset(frames[0]->propagateCost, 0, m_cuCount * sizeof(uint16_t));
-            memcpy(frames[0]->qpCuTreeOffset, frames[0]->qpAqOffset, m_cuCount * sizeof(double));
+            if (m_param->rc.qgSize == 8)
+                memcpy(frames[0]->qpCuTreeOffset, frames[0]->qpAqOffset, m_cuCount * 4 * sizeof(double));
+            else
+                memcpy(frames[0]->qpCuTreeOffset, frames[0]->qpAqOffset, m_cuCount * sizeof(double));
             return;
         }
         std::swap(frames[lastnonb]->propagateCost, frames[0]->propagateCost);
@@ -1747,7 +2063,7 @@ void Lookahead::estimateCUPropagate(Lowres **frames, double averageDuration, int
     int32_t distScaleFactor = (((b - p0) << 8) + ((p1 - p0) >> 1)) / (p1 - p0);
     int32_t bipredWeight = m_param->bEnableWeightedBiPred ? 64 - (distScaleFactor >> 2) : 32;
     int32_t bipredWeights[2] = { bipredWeight, 64 - bipredWeight };
-    int listDist[2] = { b - p0 - 1, p1 - b - 1 };
+    int listDist[2] = { b - p0, p1 - b };
 
     memset(m_scratch, 0, m_8x8Width * sizeof(int));
 
@@ -1764,9 +2080,14 @@ void Lookahead::estimateCUPropagate(Lowres **frames, double averageDuration, int
     for (uint16_t blocky = 0; blocky < m_8x8Height; blocky++)
     {
         int cuIndex = blocky * strideInCU;
-        primitives.propagateCost(m_scratch, propagateCost,
-                                 frames[b]->intraCost + cuIndex, frames[b]->lowresCosts[b - p0][p1 - b] + cuIndex,
-                                 frames[b]->invQscaleFactor + cuIndex, &fpsFactor, m_8x8Width);
+        if (m_param->rc.qgSize == 8)
+            primitives.propagateCost(m_scratch, propagateCost,
+                       frames[b]->intraCost + cuIndex, frames[b]->lowresCosts[b - p0][p1 - b] + cuIndex,
+                       frames[b]->invQscaleFactor8x8 + cuIndex, &fpsFactor, m_8x8Width);
+        else
+            primitives.propagateCost(m_scratch, propagateCost,
+                       frames[b]->intraCost + cuIndex, frames[b]->lowresCosts[b - p0][p1 - b] + cuIndex,
+                       frames[b]->invQscaleFactor + cuIndex, &fpsFactor, m_8x8Width);
 
         if (referenced)
             propagateCost += m_8x8Width;
@@ -1852,14 +2173,37 @@ void Lookahead::cuTreeFinish(Lowres *frame, double averageDuration, int ref0Dist
     if (ref0Distance && frame->weightedCostDelta[ref0Distance - 1] > 0)
         weightdelta = (1.0 - frame->weightedCostDelta[ref0Distance - 1]);
 
-    for (int cuIndex = 0; cuIndex < m_cuCount; cuIndex++)
+    if (m_param->rc.qgSize == 8)
     {
-        int intracost = (frame->intraCost[cuIndex] * frame->invQscaleFactor[cuIndex] + 128) >> 8;
-        if (intracost)
+        for (int cuY = 0; cuY < m_8x8Height; cuY++)
         {
-            int propagateCost = (frame->propagateCost[cuIndex] * fpsFactor + 128) >> 8;
-            double log2_ratio = X265_LOG2(intracost + propagateCost) - X265_LOG2(intracost) + weightdelta;
-            frame->qpCuTreeOffset[cuIndex] = frame->qpAqOffset[cuIndex] - m_cuTreeStrength * log2_ratio;
+            for (int cuX = 0; cuX < m_8x8Width; cuX++)
+            {
+                const int cuXY = cuX + cuY * m_8x8Width;
+                int intracost = ((frame->intraCost[cuXY]) / 4 * frame->invQscaleFactor8x8[cuXY] + 128) >> 8;
+                if (intracost)
+                {
+                    int propagateCost = ((frame->propagateCost[cuXY]) / 4 * fpsFactor + 128) >> 8;
+                    double log2_ratio = X265_LOG2(intracost + propagateCost) - X265_LOG2(intracost) + weightdelta;
+                    frame->qpCuTreeOffset[cuX * 2 + cuY * m_8x8Width * 4] = frame->qpAqOffset[cuX * 2 + cuY * m_8x8Width * 4] - m_cuTreeStrength * (log2_ratio);
+                    frame->qpCuTreeOffset[cuX * 2 + cuY * m_8x8Width * 4 + 1] = frame->qpAqOffset[cuX * 2 + cuY * m_8x8Width * 4 + 1] - m_cuTreeStrength * (log2_ratio);
+                    frame->qpCuTreeOffset[cuX * 2 + cuY * m_8x8Width * 4 + frame->maxBlocksInRowFullRes] = frame->qpAqOffset[cuX * 2 + cuY * m_8x8Width * 4 + frame->maxBlocksInRowFullRes] - m_cuTreeStrength * (log2_ratio);
+                    frame->qpCuTreeOffset[cuX * 2 + cuY * m_8x8Width * 4 + frame->maxBlocksInRowFullRes + 1] = frame->qpAqOffset[cuX * 2 + cuY * m_8x8Width * 4 + frame->maxBlocksInRowFullRes + 1] - m_cuTreeStrength * (log2_ratio);
+                }
+            }
+        }
+    }
+    else
+    {
+        for (int cuIndex = 0; cuIndex < m_cuCount; cuIndex++)
+        {
+            int intracost = (frame->intraCost[cuIndex] * frame->invQscaleFactor[cuIndex] + 128) >> 8;
+            if (intracost)
+            {
+                int propagateCost = (frame->propagateCost[cuIndex] * fpsFactor + 128) >> 8;
+                double log2_ratio = X265_LOG2(intracost + propagateCost) - X265_LOG2(intracost) + weightdelta;
+                frame->qpCuTreeOffset[cuIndex] = frame->qpAqOffset[cuIndex] - m_cuTreeStrength * log2_ratio;
+            }
         }
     }
 }
@@ -1883,7 +2227,14 @@ int64_t Lookahead::frameCostRecalculate(Lowres** frames, int p0, int p1, int b)
         {
             int cuxy = cux + cuy * m_8x8Width;
             int cuCost = frames[b]->lowresCosts[b - p0][p1 - b][cuxy] & LOWRES_COST_MASK;
-            double qp_adj = qp_offset[cuxy];
+            double qp_adj;
+            if (m_param->rc.qgSize == 8)
+                qp_adj = (qp_offset[cux * 2 + cuy * m_8x8Width * 4] +
+                          qp_offset[cux * 2 + cuy * m_8x8Width * 4 + 1] +
+                          qp_offset[cux * 2 + cuy * m_8x8Width * 4 + frames[b]->maxBlocksInRowFullRes] +
+                          qp_offset[cux * 2 + cuy * m_8x8Width * 4 + frames[b]->maxBlocksInRowFullRes + 1]) / 4;
+            else 
+                qp_adj = qp_offset[cuxy];
             cuCost = (cuCost * x265_exp2fix8(qp_adj) + 128) >> 8;
             rowSatd[cuy] += cuCost;
             if ((cuy > 0 && cuy < m_8x8Height - 1 &&
@@ -1987,17 +2338,15 @@ int64_t CostEstimateGroup::estimateFrameCost(LookaheadTLD& tld, int p0, int p1, 
         score = fenc->costEst[b - p0][p1 - b];
     else
     {
-        X265_CHECK(p0 != b, "I frame estimates should always be pre-calculated\n");
-
         bool bDoSearch[2];
-        bDoSearch[0] = p0 < b && fenc->lowresMvs[0][b - p0 - 1][0].x == 0x7FFF;
-        bDoSearch[1] = p1 > b && fenc->lowresMvs[1][p1 - b - 1][0].x == 0x7FFF;
+        bDoSearch[0] = fenc->lowresMvs[0][b - p0][0].x == 0x7FFF;
+        bDoSearch[1] = p1 > b && fenc->lowresMvs[1][p1 - b][0].x == 0x7FFF;
 
 #if CHECKED_BUILD
-        X265_CHECK(!(p0 < b && fenc->lowresMvs[0][b - p0 - 1][0].x == 0x7FFE), "motion search batch duplication L0\n");
-        X265_CHECK(!(p1 > b && fenc->lowresMvs[1][p1 - b - 1][0].x == 0x7FFE), "motion search batch duplication L1\n");
-        if (bDoSearch[0]) fenc->lowresMvs[0][b - p0 - 1][0].x = 0x7FFE;
-        if (bDoSearch[1]) fenc->lowresMvs[1][p1 - b - 1][0].x = 0x7FFE;
+        X265_CHECK(!(p0 < b && fenc->lowresMvs[0][b - p0][0].x == 0x7FFE), "motion search batch duplication L0\n");
+        X265_CHECK(!(p1 > b && fenc->lowresMvs[1][p1 - b][0].x == 0x7FFE), "motion search batch duplication L1\n");
+        if (bDoSearch[0]) fenc->lowresMvs[0][b - p0][0].x = 0x7FFE;
+        if (bDoSearch[1]) fenc->lowresMvs[1][p1 - b][0].x = 0x7FFE;
 #endif
 
         fenc->weightedRef[b - p0].isWeighted = false;
@@ -2088,12 +2437,13 @@ void CostEstimateGroup::estimateCUCost(LookaheadTLD& tld, int cuX, int cuY, int 
 
     /* A small, arbitrary bias to avoid VBV problems caused by zero-residual lookahead blocks. */
     int lowresPenalty = 4;
-    int listDist[2] = { b - p0 - 1, p1 - b - 1 };
+    int listDist[2] = { b - p0, p1 - b};
 
     MV mvmin, mvmax;
     int bcost = tld.me.COST_MAX;
     int listused = 0;
 
+    // TODO: restrict to slices boundaries
     // establish search bounds that don't cross extended frame boundaries
     mvmin.x = (int16_t)(-cuX * cuSize - 8);
     mvmin.y = (int16_t)(-cuY * cuSize - 8);
@@ -2154,7 +2504,7 @@ void CostEstimateGroup::estimateCUCost(LookaheadTLD& tld, int cuX, int cuY, int 
 
         /* ME will never return a cost larger than the cost @MVP, so we do not
          * have to check that ME cost is more than the estimated merge cost */
-        fencCost = tld.me.motionEstimate(fref, mvmin, mvmax, mvp, 0, NULL, s_merange, *fencMV);
+        fencCost = tld.me.motionEstimate(fref, mvmin, mvmax, mvp, 0, NULL, s_merange, *fencMV, m_lookahead.m_param->maxSlices);
         if (skipCost < 64 && skipCost < fencCost && bBidir)
         {
             fencCost = skipCost;
@@ -2173,19 +2523,16 @@ void CostEstimateGroup::estimateCUCost(LookaheadTLD& tld, int cuX, int cuY, int 
         intptr_t stride0 = X265_LOWRES_CU_SIZE, stride1 = X265_LOWRES_CU_SIZE;
         pixel *src0 = fref0->lowresMC(pelOffset, fenc->lowresMvs[0][listDist[0]][cuXY], subpelbuf0, stride0);
         pixel *src1 = fref1->lowresMC(pelOffset, fenc->lowresMvs[1][listDist[1]][cuXY], subpelbuf1, stride1);
-
         ALIGN_VAR_32(pixel, ref[X265_LOWRES_CU_SIZE * X265_LOWRES_CU_SIZE]);
-        primitives.pu[LUMA_8x8].pixelavg_pp(ref, X265_LOWRES_CU_SIZE, src0, stride0, src1, stride1, 32);
+        primitives.pu[LUMA_8x8].pixelavg_pp[NONALIGNED](ref, X265_LOWRES_CU_SIZE, src0, stride0, src1, stride1, 32);
         int bicost = tld.me.bufSATD(ref, X265_LOWRES_CU_SIZE);
         COPY2_IF_LT(bcost, bicost, listused, 3);
-
         /* coloc candidate */
         src0 = fref0->lowresPlane[0] + pelOffset;
         src1 = fref1->lowresPlane[0] + pelOffset;
-        primitives.pu[LUMA_8x8].pixelavg_pp(ref, X265_LOWRES_CU_SIZE, src0, fref0->lumaStride, src1, fref1->lumaStride, 32);
+        primitives.pu[LUMA_8x8].pixelavg_pp[NONALIGNED](ref, X265_LOWRES_CU_SIZE, src0, fref0->lumaStride, src1, fref1->lumaStride, 32);
         bicost = tld.me.bufSATD(ref, X265_LOWRES_CU_SIZE);
         COPY2_IF_LT(bcost, bicost, listused, 3);
-
         bcost += lowresPenalty;
     }
     else /* P, also consider intra */
@@ -2202,8 +2549,11 @@ void CostEstimateGroup::estimateCUCost(LookaheadTLD& tld, int cuX, int cuY, int 
     /* do not include edge blocks in the frame cost estimates, they are not very accurate */
     const bool bFrameScoreCU = (cuX > 0 && cuX < widthInCU - 1 &&
                                 cuY > 0 && cuY < heightInCU - 1) || widthInCU <= 2 || heightInCU <= 2;
-
-    int bcostAq = (bFrameScoreCU && fenc->invQscaleFactor) ? ((bcost * fenc->invQscaleFactor[cuXY] + 128) >> 8) : bcost;
+    int bcostAq;
+    if (m_lookahead.m_param->rc.qgSize == 8)
+        bcostAq = (bFrameScoreCU && fenc->invQscaleFactor) ? ((bcost * fenc->invQscaleFactor8x8[cuXY] + 128) >> 8) : bcost;
+    else
+        bcostAq = (bFrameScoreCU && fenc->invQscaleFactor) ? ((bcost * fenc->invQscaleFactor[cuXY] +128) >> 8) : bcost;
 
     if (bFrameScoreCU)
     {

@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Steve Borho <steve@borho.org>
  *          Min Chen <chenm003@163.com>
@@ -51,6 +51,10 @@ private:
     int m_numWords;
 
     int m_numRows;
+
+protected:
+    uint32_t *m_row_to_idx;
+    uint32_t *m_idx_to_row;
 
 public:
 

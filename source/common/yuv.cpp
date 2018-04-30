@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2015 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Steve Borho <steve@borho.org>
  *          Min Chen <chenm003@163.com>
@@ -46,6 +46,11 @@ bool Yuv::create(uint32_t size, int csp)
 
     m_size  = size;
     m_part = partitionFromSizes(size, size);
+
+    for (int i = 0; i < 2; i++)
+        for (int j = 0; j < MAX_NUM_REF; j++)
+            for (int k = 0; k < INTEGRAL_PLANE_NUM; k++)
+                m_integral[i][j][k] = NULL;
 
     if (csp == X265_CSP_I400)
     {
@@ -165,11 +170,14 @@ void Yuv::copyPartToYuv(Yuv& dstYuv, uint32_t absPartIdx) const
 
 void Yuv::addClip(const Yuv& srcYuv0, const ShortYuv& srcYuv1, uint32_t log2SizeL, int picCsp)
 {
-    primitives.cu[log2SizeL - 2].add_ps(m_buf[0], m_size, srcYuv0.m_buf[0], srcYuv1.m_buf[0], srcYuv0.m_size, srcYuv1.m_size);
+    primitives.cu[log2SizeL - 2].add_ps[(m_size % 64 == 0) && (srcYuv0.m_size % 64 == 0) && (srcYuv1.m_size % 64 == 0)](m_buf[0],
+                                         m_size, srcYuv0.m_buf[0], srcYuv1.m_buf[0], srcYuv0.m_size, srcYuv1.m_size);
     if (m_csp != X265_CSP_I400 && picCsp != X265_CSP_I400)
     {
-        primitives.chroma[m_csp].cu[log2SizeL - 2].add_ps(m_buf[1], m_csize, srcYuv0.m_buf[1], srcYuv1.m_buf[1], srcYuv0.m_csize, srcYuv1.m_csize);
-        primitives.chroma[m_csp].cu[log2SizeL - 2].add_ps(m_buf[2], m_csize, srcYuv0.m_buf[2], srcYuv1.m_buf[2], srcYuv0.m_csize, srcYuv1.m_csize);
+        primitives.chroma[m_csp].cu[log2SizeL - 2].add_ps[(m_csize % 64 == 0) && (srcYuv0.m_csize % 64 ==0) && (srcYuv1.m_csize % 64 == 0)](m_buf[1],
+                                                           m_csize, srcYuv0.m_buf[1], srcYuv1.m_buf[1], srcYuv0.m_csize, srcYuv1.m_csize);
+        primitives.chroma[m_csp].cu[log2SizeL - 2].add_ps[(m_csize % 64 == 0) && (srcYuv0.m_csize % 64 == 0) && (srcYuv1.m_csize % 64 == 0)](m_buf[2],
+                                                           m_csize, srcYuv0.m_buf[2], srcYuv1.m_buf[2], srcYuv0.m_csize, srcYuv1.m_csize);
     }
     if (picCsp == X265_CSP_I400 && m_csp != X265_CSP_I400)
     {
@@ -187,7 +195,7 @@ void Yuv::addAvg(const ShortYuv& srcYuv0, const ShortYuv& srcYuv1, uint32_t absP
         const int16_t* srcY0 = srcYuv0.getLumaAddr(absPartIdx);
         const int16_t* srcY1 = srcYuv1.getLumaAddr(absPartIdx);
         pixel* dstY = getLumaAddr(absPartIdx);
-        primitives.pu[part].addAvg(srcY0, srcY1, dstY, srcYuv0.m_size, srcYuv1.m_size, m_size);
+        primitives.pu[part].addAvg[(srcYuv0.m_size % 64 == 0) && (srcYuv1.m_size % 64 == 0) && (m_size % 64 == 0)](srcY0, srcY1, dstY, srcYuv0.m_size, srcYuv1.m_size, m_size);
     }
     if (bChroma)
     {
@@ -197,8 +205,8 @@ void Yuv::addAvg(const ShortYuv& srcYuv0, const ShortYuv& srcYuv1, uint32_t absP
         const int16_t* srcV1 = srcYuv1.getCrAddr(absPartIdx);
         pixel* dstU = getCbAddr(absPartIdx);
         pixel* dstV = getCrAddr(absPartIdx);
-        primitives.chroma[m_csp].pu[part].addAvg(srcU0, srcU1, dstU, srcYuv0.m_csize, srcYuv1.m_csize, m_csize);
-        primitives.chroma[m_csp].pu[part].addAvg(srcV0, srcV1, dstV, srcYuv0.m_csize, srcYuv1.m_csize, m_csize);
+        primitives.chroma[m_csp].pu[part].addAvg[(srcYuv0.m_csize % 64 == 0) && (srcYuv1.m_csize % 64 == 0) && (m_csize % 64 == 0)](srcU0, srcU1, dstU, srcYuv0.m_csize, srcYuv1.m_csize, m_csize);
+        primitives.chroma[m_csp].pu[part].addAvg[(srcYuv0.m_csize % 64 == 0) && (srcYuv1.m_csize % 64 == 0) && (m_csize % 64 == 0)](srcV0, srcV1, dstV, srcYuv0.m_csize, srcYuv1.m_csize, m_csize);
     }
 }
 

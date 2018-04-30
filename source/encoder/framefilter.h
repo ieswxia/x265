@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Chung Shin Yee <shinyee@multicorewareinc.com>
  *          Min Chen <chenm003@163.com>
@@ -57,10 +57,12 @@ public:
     int           m_lastHeight;
     int           m_lastWidth;
     
+    ThreadSafeInteger integralCompleted;     /* check if integral calculation is completed in this row */
+
     void*         m_ssimBuf;        /* Temp storage for ssim computation */
 
 #define MAX_PFILTER_CUS     (4) /* maximum CUs for every thread */
-    class ParallelFilter : public BondedTaskGroup, public Deblock
+    class ParallelFilter : public Deblock
     {
     public:
         uint32_t            m_rowHeight;
@@ -93,7 +95,7 @@ public:
         void processSaoCTU(SAOParam *saoParam, int col);
 
         // Copy and Save SAO reference pixels for SAO Rdo decide
-        void copySaoAboveRef(PicYuv* reconPic, uint32_t cuAddr, int col);
+        void copySaoAboveRef(const CUData *ctu, PicYuv* reconPic, uint32_t cuAddr, int col);
 
         // Post-Process (Border extension)
         void processPostCu(int col) const;
@@ -102,10 +104,6 @@ public:
         {
             return m_rowHeight;
         }
-
-    protected:
-
-        ParallelFilter operator=(const ParallelFilter&);
     };
 
     ParallelFilter*     m_parallelFilter;
@@ -121,7 +119,7 @@ public:
 
     uint32_t getCUWidth(int colNum) const
     {
-        return (colNum == (int)m_numCols - 1) ? m_lastWidth : g_maxCUSize;
+        return (colNum == (int)m_numCols - 1) ? m_lastWidth : m_param->maxCUSize;
     }
 
     void init(Encoder *top, FrameEncoder *frame, int numRows, uint32_t numCols);
@@ -131,6 +129,7 @@ public:
 
     void processRow(int row);
     void processPostRow(int row);
+    void computeMEIntegral(int row);
 };
 }
 

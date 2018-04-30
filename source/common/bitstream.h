@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Author: Steve Borho <steve@borho.org>
  *         Min Chen <chenm003@163.com>
@@ -71,6 +71,7 @@ public:
     uint32_t getNumberOfWrittenBytes() const { return m_byteOccupancy; }
     uint32_t getNumberOfWrittenBits()  const { return m_byteOccupancy * 8 + m_partialByteBits; }
     const uint8_t* getFIFO() const           { return m_fifo; }
+    void     copyBits(Bitstream* stream)     { m_partialByteBits = stream->m_partialByteBits; m_byteOccupancy = stream->m_byteOccupancy; m_partialByte = stream->m_partialByte; }
 
     void     write(uint32_t val, uint32_t numBits);
     void     writeByte(uint32_t val);

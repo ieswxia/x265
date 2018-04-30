@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Steve Borho <steve@borho.org>
  *          Mandar Gurav <mandar@multicorewareinc.com>
@@ -62,6 +62,13 @@ enum LumaCU // can be indexed using log2n(width)-2
     NUM_CU_SIZES
 };
 
+enum AlignPrimitive
+{
+    NONALIGNED,
+    ALIGNED,
+    NUM_ALIGNMENT_TYPES
+};
+
 enum { NUM_TR_SIZE = 4 }; // TU are 4x4, 8x8, 16x16, and 32x32
 
 
@@ -110,11 +117,23 @@ enum ChromaCU422
     BLOCK_422_32x64
 };
 
+enum IntegralSize
+{
+    INTEGRAL_4,
+    INTEGRAL_8,
+    INTEGRAL_12,
+    INTEGRAL_16,
+    INTEGRAL_24,
+    INTEGRAL_32,
+    NUM_INTEGRAL_SIZE
+};
+
 typedef int  (*pixelcmp_t)(const pixel* fenc, intptr_t fencstride, const pixel* fref, intptr_t frefstride); // fenc is aligned
 typedef int  (*pixelcmp_ss_t)(const int16_t* fenc, intptr_t fencstride, const int16_t* fref, intptr_t frefstride);
 typedef sse_t (*pixel_sse_t)(const pixel* fenc, intptr_t fencstride, const pixel* fref, intptr_t frefstride); // fenc is aligned
 typedef sse_t (*pixel_sse_ss_t)(const int16_t* fenc, intptr_t fencstride, const int16_t* fref, intptr_t frefstride);
 typedef sse_t (*pixel_ssd_s_t)(const int16_t* fenc, intptr_t fencstride);
+typedef int(*pixelcmp_ads_t)(int encDC[], uint32_t *sums, int delta, uint16_t *costMvX, int16_t *mvs, int width, int thresh);
 typedef void (*pixelcmp_x4_t)(const pixel* fenc, const pixel* fref0, const pixel* fref1, const pixel* fref2, const pixel* fref3, intptr_t frefstride, int32_t* res);
 typedef void (*pixelcmp_x3_t)(const pixel* fenc, const pixel* fref0, const pixel* fref1, const pixel* fref2, intptr_t frefstride, int32_t* res);
 typedef void (*blockfill_s_t)(int16_t* dst, intptr_t dstride, int16_t val);
@@ -185,9 +204,12 @@ typedef void (*saoCuStatsE3_t)(const int16_t *diff, const pixel *rec, intptr_t s
 typedef void (*sign_t)(int8_t *dst, const pixel *src1, const pixel *src2, const int endX);
 typedef void (*planecopy_cp_t) (const uint8_t* src, intptr_t srcStride, pixel* dst, intptr_t dstStride, int width, int height, int shift);
 typedef void (*planecopy_sp_t) (const uint16_t* src, intptr_t srcStride, pixel* dst, intptr_t dstStride, int width, int height, int shift, uint16_t mask);
-typedef void (*calcHDRStats_t)(pixel *srcY, pixel* srcU, pixel* srcV, intptr_t stride, intptr_t strideC, int width, int height, double *outsum, pixel *outMax, const pixel minPix, const pixel maxPix, const int hShift, const int vShift);
+typedef pixel (*planeClipAndMax_t)(pixel *src, intptr_t stride, int width, int height, uint64_t *outsum, const pixel minPix, const pixel maxPix);
 
 typedef void (*cutree_propagate_cost) (int* dst, const uint16_t* propagateIn, const int32_t* intraCosts, const uint16_t* interCosts, const int32_t* invQscales, const double* fpsFactor, int len);
+
+typedef void (*cutree_fix8_unpack)(double *dst, uint16_t *src, int count);
+typedef void (*cutree_fix8_pack)(uint16_t *dst, double *src, int count);
 
 typedef int (*scanPosLast_t)(const uint16_t *scan, const coeff_t *coeff, uint16_t *coeffSign, uint16_t *coeffFlag, uint8_t *coeffNum, int numSig, const uint16_t* scanCG4x4, const int trSize);
 typedef uint32_t (*findPosFirstLast_t)(const int16_t *dstCoeff, const intptr_t trSize, const uint16_t scanTbl[16]);
@@ -198,6 +220,11 @@ typedef uint32_t (*costC1C2Flag_t)(uint16_t *absCoeff, intptr_t numC1Flag, uint8
 
 typedef void (*pelFilterLumaStrong_t)(pixel* src, intptr_t srcStep, intptr_t offset, int32_t tcP, int32_t tcQ);
 typedef void (*pelFilterChroma_t)(pixel* src, intptr_t srcStep, intptr_t offset, int32_t tc, int32_t maskP, int32_t maskQ);
+
+typedef void (*integralv_t)(uint32_t *sum, intptr_t stride);
+typedef void (*integralh_t)(uint32_t *sum, pixel *pix, intptr_t stride);
+typedef void(*nonPsyRdoQuant_t)(int16_t *m_resiDctCoeff, int64_t *costUncoded, int64_t *totalUncodedCost, int64_t *totalRdCost, uint32_t blkPos);
+typedef void(*psyRdoQuant_t)(int16_t *m_resiDctCoeff, int16_t *m_fencDctCoeff, int64_t *costUncoded, int64_t *totalUncodedCost, int64_t *totalRdCost, int64_t *psyScale, uint32_t blkPos);
 
 /* Function pointers to optimized encoder primitives. Each pointer can reference
  * either an assembly routine, a SIMD intrinsic primitive, or a C function */
@@ -214,6 +241,7 @@ struct EncoderPrimitives
         pixelcmp_t     sad;         // Sum of Absolute Differences
         pixelcmp_x3_t  sad_x3;      // Sum of Absolute Differences, 3 mv offsets at once
         pixelcmp_x4_t  sad_x4;      // Sum of Absolute Differences, 4 mv offsets at once
+        pixelcmp_ads_t ads;         // Absolute Differences sum
         pixelcmp_t     satd;        // Sum of Absolute Transformed Differences (4x4 Hadamard)
 
         filter_pp_t    luma_hpp;    // 8-tap luma motion compensation interpolation filters
@@ -223,12 +251,10 @@ struct EncoderPrimitives
         filter_sp_t    luma_vsp;
         filter_ss_t    luma_vss;
         filter_hv_pp_t luma_hvpp;   // combines hps + vsp
-
-        pixelavg_pp_t  pixelavg_pp; // quick bidir using pixels (borrowed from x264)
-        addAvg_t       addAvg;      // bidir motion compensation, uses 16bit values
-
+        pixelavg_pp_t  pixelavg_pp[NUM_ALIGNMENT_TYPES]; // quick bidir using pixels (borrowed from x264)
+        addAvg_t       addAvg[NUM_ALIGNMENT_TYPES];      // bidir motion compensation, uses 16bit values
         copy_pp_t      copy_pp;
-        filter_p2s_t   convert_p2s;
+        filter_p2s_t   convert_p2s[NUM_ALIGNMENT_TYPES];
     }
     pu[NUM_PU_SIZES];
 
@@ -240,19 +266,22 @@ struct EncoderPrimitives
      * primitives will leave 64x64 pointers NULL.  Indexed by LumaCU */
     struct CU
     {
-        dct_t           dct;
-        idct_t          idct;
-        calcresidual_t  calcresidual;
+        dct_t           dct;    // active dct transformation
+        idct_t          idct;   // active idct transformation
+
+        dct_t           standard_dct;   // original dct function, used by lowpass_dct
+        dct_t           lowpass_dct;    // lowpass dct approximation
+
+        calcresidual_t  calcresidual[NUM_ALIGNMENT_TYPES];
         pixel_sub_ps_t  sub_ps;
-        pixel_add_ps_t  add_ps;
-        blockfill_s_t   blockfill_s;   // block fill, for DC transforms
+        pixel_add_ps_t  add_ps[NUM_ALIGNMENT_TYPES];
+        blockfill_s_t   blockfill_s[NUM_ALIGNMENT_TYPES];   // block fill, for DC transforms
         copy_cnt_t      copy_cnt;      // copy coeff while counting non-zero
         count_nonzero_t count_nonzero;
         cpy2Dto1D_shl_t cpy2Dto1D_shl;
         cpy2Dto1D_shr_t cpy2Dto1D_shr;
-        cpy1Dto2D_shl_t cpy1Dto2D_shl;
+        cpy1Dto2D_shl_t cpy1Dto2D_shl[NUM_ALIGNMENT_TYPES];
         cpy1Dto2D_shr_t cpy1Dto2D_shr;
-
         copy_sp_t       copy_sp;
         copy_ps_t       copy_ps;
         copy_ss_t       copy_ss;
@@ -263,16 +292,16 @@ struct EncoderPrimitives
         pixel_sse_t     sse_pp;        // Sum of Square Error (pixel, pixel) fenc alignment not assumed
         pixel_sse_ss_t  sse_ss;        // Sum of Square Error (short, short) fenc alignment not assumed
         pixelcmp_t      psy_cost_pp;   // difference in AC energy between two pixel blocks
-        pixel_ssd_s_t   ssd_s;         // Sum of Square Error (residual coeff to self)
+        pixel_ssd_s_t   ssd_s[NUM_ALIGNMENT_TYPES];         // Sum of Square Error (residual coeff to self)
         pixelcmp_t      sa8d;          // Sum of Transformed Differences (8x8 Hadamard), uses satd for 4x4 intra TU
-
         transpose_t     transpose;     // transpose pixel block; for use with intra all-angs
         intra_allangs_t intra_pred_allangs;
         intra_filter_t  intra_filter;
         intra_pred_t    intra_pred[NUM_INTRA_MODE];
+        nonPsyRdoQuant_t nonPsyRdoQuant;
+        psyRdoQuant_t    psyRdoQuant;
     }
     cu[NUM_CU_SIZES];
-
     /* These remaining primitives work on either fixed block sizes or take
      * block dimensions as arguments and thus do not belong in either the PU or
      * the CU arrays */
@@ -284,7 +313,7 @@ struct EncoderPrimitives
     dequant_scaling_t     dequant_scaling;
     dequant_normal_t      dequant_normal;
     denoiseDct_t          denoiseDct;
-    scale1D_t             scale1D_128to64;
+    scale1D_t             scale1D_128to64[NUM_ALIGNMENT_TYPES];
     scale2D_t             scale2D_64to32;
 
     ssim_4x4x2_core_t     ssim_4x4x2_core;
@@ -314,12 +343,14 @@ struct EncoderPrimitives
 
     downscale_t           frameInitLowres;
     cutree_propagate_cost propagateCost;
+    cutree_fix8_unpack    fix8Unpack;
+    cutree_fix8_pack      fix8Pack;
 
     extendCURowBorder_t   extendRowBorder;
     planecopy_cp_t        planecopy_cp;
     planecopy_sp_t        planecopy_sp;
     planecopy_sp_t        planecopy_sp_shl;
-    calcHDRStats_t        calcHDRStats;
+    planeClipAndMax_t     planeClipAndMax;
 
     weightp_sp_t          weight_sp;
     weightp_pp_t          weight_pp;
@@ -334,6 +365,9 @@ struct EncoderPrimitives
 
     pelFilterLumaStrong_t pelFilterLumaStrong[2]; // EDGE_VER = 0, EDGE_HOR = 1
     pelFilterChroma_t     pelFilterChroma[2];     // EDGE_VER = 0, EDGE_HOR = 1
+
+    integralv_t            integral_initv[NUM_INTEGRAL_SIZE];
+    integralh_t            integral_inith[NUM_INTEGRAL_SIZE];
 
     /* There is one set of chroma primitives per color space. An encoder will
      * have just a single color space and thus it will only ever use one entry
@@ -356,9 +390,9 @@ struct EncoderPrimitives
             filter_ss_t  filter_vss;
             filter_pp_t  filter_hpp;
             filter_hps_t filter_hps;
-            addAvg_t     addAvg;
+            addAvg_t     addAvg[NUM_ALIGNMENT_TYPES];
             copy_pp_t    copy_pp;
-            filter_p2s_t p2s;
+            filter_p2s_t p2s[NUM_ALIGNMENT_TYPES];
 
         }
         pu[NUM_PU_SIZES];
@@ -369,7 +403,7 @@ struct EncoderPrimitives
             pixelcmp_t     sa8d;    // if chroma CU is not multiple of 8x8, will use satd
             pixel_sse_t    sse_pp;
             pixel_sub_ps_t sub_ps;
-            pixel_add_ps_t add_ps;
+            pixel_add_ps_t add_ps[NUM_ALIGNMENT_TYPES];
 
             copy_ps_t      copy_ps;
             copy_sp_t      copy_sp;
@@ -397,6 +431,22 @@ inline int partitionFromSizes(int width, int height)
     return part;
 }
 
+/* Computes the size of the LumaPU for a given LumaPU enum */
+inline void sizesFromPartition(int part, int *width, int *height)
+{
+    X265_CHECK(part >= 0 && part <= 24, "Invalid part %d \n", part);
+    extern const uint8_t lumaPartitionMapTable[];
+    int index = 0;
+    for (int i = 0; i < 256;i++)
+        if (part == lumaPartitionMapTable[i])
+        {
+            index = i;
+            break;
+        }
+    *width = 4 * ((index >> 4) + 1);
+    *height = 4 * ((index % 16) + 1);
+}
+
 inline int partitionFromLog2Size(int log2Size)
 {
     X265_CHECK(2 <= log2Size && log2Size <= 6, "Invalid block size\n");
@@ -407,6 +457,12 @@ void setupCPrimitives(EncoderPrimitives &p);
 void setupInstrinsicPrimitives(EncoderPrimitives &p, int cpuMask);
 void setupAssemblyPrimitives(EncoderPrimitives &p, int cpuMask);
 void setupAliasPrimitives(EncoderPrimitives &p);
+#if HAVE_ALTIVEC
+void setupPixelPrimitives_altivec(EncoderPrimitives &p);
+void setupDCTPrimitives_altivec(EncoderPrimitives &p);
+void setupFilterPrimitives_altivec(EncoderPrimitives &p);
+void setupIntraPrimitives_altivec(EncoderPrimitives &p);
+#endif
 }
 
 #if !EXPORT_C_API

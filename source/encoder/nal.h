@@ -1,5 +1,5 @@
 /*****************************************************************************
-* Copyright (C) 2013 x265 project
+* Copyright (C) 2013-2017 MulticoreWare, Inc
 *
 * Authors: Steve Borho <steve@borho.org>
 *
@@ -34,6 +34,7 @@ class Bitstream;
 
 class NALList
 {
+public:
     static const int MAX_NAL_UNITS = 16;
 
 public:

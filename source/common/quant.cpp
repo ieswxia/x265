@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2015 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Steve Borho <steve@borho.org>
  *          Min Chen <chenm003@163.com>
@@ -225,8 +225,8 @@ void Quant::setQPforQuant(const CUData& ctu, int qp)
     m_rdoqLevel = ctu.m_encData->m_param->rdoqLevel;
     if (ctu.m_chromaFormat != X265_CSP_I400)
     {
-        setChromaQP(qp + ctu.m_slice->m_pps->chromaQpOffset[0], TEXT_CHROMA_U, ctu.m_chromaFormat);
-        setChromaQP(qp + ctu.m_slice->m_pps->chromaQpOffset[1], TEXT_CHROMA_V, ctu.m_chromaFormat);
+        setChromaQP(qp + ctu.m_slice->m_pps->chromaQpOffset[0] + ctu.m_slice->m_chromaQpOffset[0], TEXT_CHROMA_U, ctu.m_chromaFormat);
+        setChromaQP(qp + ctu.m_slice->m_pps->chromaQpOffset[1] + ctu.m_slice->m_chromaQpOffset[1], TEXT_CHROMA_V, ctu.m_chromaFormat);
     }
 }
 
@@ -479,17 +479,92 @@ uint32_t Quant::transformNxN(const CUData& cu, const pixel* fenc, uint32_t fencS
     }
 }
 
+uint64_t Quant::ssimDistortion(const CUData& cu, const pixel* fenc, uint32_t fStride, const pixel* recon, intptr_t rstride, uint32_t log2TrSize, TextType ttype, uint32_t absPartIdx)
+{
+    static const int ssim_c1 = (int)(.01 * .01 * PIXEL_MAX * PIXEL_MAX * 64 + .5); // 416
+    static const int ssim_c2 = (int)(.03 * .03 * PIXEL_MAX * PIXEL_MAX * 64 * 63 + .5); // 235963
+    int shift = (X265_DEPTH - 8);
+
+    int trSize = 1 << log2TrSize;
+    uint64_t ssDc = 0, ssBlock = 0, ssAc = 0;
+
+    // Calculation of (X(0) - Y(0)) * (X(0) - Y(0)), DC
+    ssDc = 0;
+    for (int y = 0; y < trSize; y += 4)
+    {
+        for (int x = 0; x < trSize; x += 4)
+        {
+            int temp = fenc[y * fStride + x] - recon[y * rstride + x]; // copy of residual coeff
+            ssDc += temp * temp;
+        }
+    }
+
+    // Calculation of (X(k) - Y(k)) * (X(k) - Y(k)), AC
+    ssBlock = 0;
+    for (int y = 0; y < trSize; y++)
+    {
+        for (int x = 0; x < trSize; x++)
+        {
+            int temp = fenc[y * fStride + x] - recon[y * rstride + x]; // copy of residual coeff
+            ssBlock += temp * temp;
+        }
+    }
+
+    ssAc = ssBlock - ssDc;
+
+    // 1. Calculation of fdc'
+    // Calculate numerator of dc normalization factor
+    uint64_t fDc_num = 0;
+
+    // 2. Calculate dc component
+    uint64_t dc_k = 0;
+    for (int block_yy = 0; block_yy < trSize; block_yy += 4)
+    {
+        for (int block_xx = 0; block_xx < trSize; block_xx += 4)
+        {
+            uint32_t temp = fenc[block_yy * fStride + block_xx] >> shift;
+            dc_k += temp * temp;
+        }
+    }
+
+    fDc_num = (2 * dc_k)  + (trSize * trSize * ssim_c1); // 16 pixels -> for each 4x4 block
+    fDc_num /= ((trSize >> 2) * (trSize >> 2));
+
+    // 1. Calculation of fac'
+    // Calculate numerator of ac normalization factor
+    uint64_t fAc_num = 0;
+
+    // 2. Calculate ac component
+    uint64_t ac_k = 0;
+    for (int block_yy = 0; block_yy < trSize; block_yy += 1)
+    {
+        for (int block_xx = 0; block_xx < trSize; block_xx += 1)
+        {
+            uint32_t temp = fenc[block_yy * fStride + block_xx] >> shift;
+            ac_k += temp * temp;
+        }
+    }
+    ac_k -= dc_k;
+
+    double s = 1 + 0.005 * cu.m_qp[absPartIdx];
+
+    fAc_num = ac_k + uint64_t(s * ac_k) + ssim_c2;
+    fAc_num /= ((trSize >> 2) * (trSize >> 2));
+
+    // Calculate dc and ac normalization factor
+    uint64_t ssim_distortion = ((ssDc * cu.m_fDc_den[ttype]) / fDc_num) + ((ssAc * cu.m_fAc_den[ttype]) / fAc_num);
+    return ssim_distortion;
+}
+
 void Quant::invtransformNxN(const CUData& cu, int16_t* residual, uint32_t resiStride, const coeff_t* coeff,
                             uint32_t log2TrSize, TextType ttype, bool bIntra, bool useTransformSkip, uint32_t numSig)
 {
     const uint32_t sizeIdx = log2TrSize - 2;
-
     if (cu.m_tqBypass[0])
     {
-        primitives.cu[sizeIdx].cpy1Dto2D_shl(residual, coeff, resiStride, 0);
+        primitives.cu[sizeIdx].cpy1Dto2D_shl[resiStride % 64 == 0](residual, coeff, resiStride, 0);
         return;
     }
-
     // Values need to pass as input parameter in dequant
     int rem = m_qpParam[ttype].rem;
     int per = m_qpParam[ttype].per;
@@ -518,7 +593,7 @@ void Quant::invtransformNxN(const CUData& cu, int16_t* residual, uint32_t resiSt
         if (transformShift > 0)
             primitives.cu[sizeIdx].cpy1Dto2D_shr(residual, m_resiDctCoeff, resiStride, transformShift);
         else
-            primitives.cu[sizeIdx].cpy1Dto2D_shl(residual, m_resiDctCoeff, resiStride, -transformShift);
+            primitives.cu[sizeIdx].cpy1Dto2D_shl[resiStride % 64 == 0](residual, m_resiDctCoeff, resiStride, -transformShift);
 #endif
     }
     else
@@ -534,7 +609,7 @@ void Quant::invtransformNxN(const CUData& cu, int16_t* residual, uint32_t resiSt
             const int add_2nd = 1 << (shift_2nd - 1);
 
             int dc_val = (((m_resiDctCoeff[0] * (64 >> 6) + add_1st) >> shift_1st) * (64 >> 3) + add_2nd) >> shift_2nd;
-            primitives.cu[sizeIdx].blockfill_s(residual, resiStride, (int16_t)dc_val);
+            primitives.cu[sizeIdx].blockfill_s[resiStride % 64 == 0](residual, resiStride, (int16_t)dc_val);
             return;
         }
 
@@ -567,11 +642,9 @@ uint32_t Quant::rdoQuant(const CUData& cu, int16_t* dstCoeff, TextType ttype, ui
     X265_CHECK((int)numSig == primitives.cu[log2TrSize - 2].count_nonzero(dstCoeff), "numSig differ\n");
     if (!numSig)
         return 0;
-
     const uint32_t trSize = 1 << log2TrSize;
     int64_t lambda2 = m_qpParam[ttype].lambda2;
-    const int64_t psyScale = ((int64_t)m_psyRdoqScale * m_qpParam[ttype].lambda);
-
+    int64_t psyScale = ((int64_t)m_psyRdoqScale * m_qpParam[ttype].lambda);
     /* unquant constants for measuring distortion. Scaling list quant coefficients have a (1 << 4)
      * scale applied that must be removed during unquant. Note that in real dequant there is clipping
      * at several stages. We skip the clipping for simplicity when measuring RD cost */
@@ -648,28 +721,9 @@ uint32_t Quant::rdoQuant(const CUData& cu, int16_t* dstCoeff, TextType ttype, ui
         for (int cgScanPos = cgLastScanPos + 1; cgScanPos < (int)cgNum ; cgScanPos++)
         {
             X265_CHECK(coeffNum[cgScanPos] == 0, "count of coeff failure\n");
-
             uint32_t scanPosBase = (cgScanPos << MLS_CG_SIZE);
             uint32_t blkPos      = codeParams.scan[scanPosBase];
-
-            // TODO: we can't SIMD optimize because PSYVALUE need 64-bits multiplication, convert to Double can work faster by FMA
-            for (int y = 0; y < MLS_CG_SIZE; y++)
-            {
-                for (int x = 0; x < MLS_CG_SIZE; x++)
-                {
-                    int signCoef         = m_resiDctCoeff[blkPos + x];            /* pre-quantization DCT coeff */
-                    int predictedCoef    = m_fencDctCoeff[blkPos + x] - signCoef; /* predicted DCT = source DCT - residual DCT*/
-
-                    costUncoded[blkPos + x] = ((int64_t)signCoef * signCoef) << scaleBits;
-
-                    /* when no residual coefficient is coded, predicted coef == recon coef */
-                    costUncoded[blkPos + x] -= PSYVALUE(predictedCoef);
-
-                    totalUncodedCost += costUncoded[blkPos + x];
-                    totalRdCost += costUncoded[blkPos + x];
-                }
-                blkPos += trSize;
-            }
+            primitives.cu[log2TrSize - 2].psyRdoQuant(m_resiDctCoeff, m_fencDctCoeff, costUncoded, &totalUncodedCost, &totalRdCost, &psyScale, blkPos);
         }
     }
     else
@@ -678,25 +732,11 @@ uint32_t Quant::rdoQuant(const CUData& cu, int16_t* dstCoeff, TextType ttype, ui
         for (int cgScanPos = cgLastScanPos + 1; cgScanPos < (int)cgNum ; cgScanPos++)
         {
             X265_CHECK(coeffNum[cgScanPos] == 0, "count of coeff failure\n");
-
             uint32_t scanPosBase = (cgScanPos << MLS_CG_SIZE);
             uint32_t blkPos      = codeParams.scan[scanPosBase];
-
-            for (int y = 0; y < MLS_CG_SIZE; y++)
-            {
-                for (int x = 0; x < MLS_CG_SIZE; x++)
-                {
-                    int signCoef = m_resiDctCoeff[blkPos + x];            /* pre-quantization DCT coeff */
-                    costUncoded[blkPos + x] = ((int64_t)signCoef * signCoef) << scaleBits;
-
-                    totalUncodedCost += costUncoded[blkPos + x];
-                    totalRdCost += costUncoded[blkPos + x];
-                }
-                blkPos += trSize;
-            }
+            primitives.cu[log2TrSize - 2].nonPsyRdoQuant(m_resiDctCoeff, costUncoded, &totalUncodedCost, &totalRdCost, blkPos);
         }
     }
-
     static const uint8_t table_cnt[5][SCAN_SET_SIZE] =
     {
         // patternSigCtx = 0
@@ -756,25 +796,14 @@ uint32_t Quant::rdoQuant(const CUData& cu, int16_t* dstCoeff, TextType ttype, ui
             // TODO: does we need zero-coeff cost?
             const uint32_t scanPosBase = (cgScanPos << MLS_CG_SIZE);
             uint32_t blkPos = codeParams.scan[scanPosBase];
-
             if (usePsyMask)
             {
-                // TODO: we can't SIMD optimize because PSYVALUE need 64-bits multiplication, convert to Double can work faster by FMA
+                primitives.cu[log2TrSize - 2].psyRdoQuant(m_resiDctCoeff, m_fencDctCoeff, costUncoded, &totalUncodedCost, &totalRdCost, &psyScale, blkPos);
+                blkPos = codeParams.scan[scanPosBase];
                 for (int y = 0; y < MLS_CG_SIZE; y++)
                 {
                     for (int x = 0; x < MLS_CG_SIZE; x++)
                     {
-                        int signCoef         = m_resiDctCoeff[blkPos + x];            /* pre-quantization DCT coeff */
-                        int predictedCoef    = m_fencDctCoeff[blkPos + x] - signCoef; /* predicted DCT = source DCT - residual DCT*/
-
-                        costUncoded[blkPos + x] = ((int64_t)signCoef * signCoef) << scaleBits;
-
-                        /* when no residual coefficient is coded, predicted coef == recon coef */
-                        costUncoded[blkPos + x] -= PSYVALUE(predictedCoef);
-
-                        totalUncodedCost += costUncoded[blkPos + x];
-                        totalRdCost += costUncoded[blkPos + x];
-
                         const uint32_t scanPosOffset =  y * MLS_CG_SIZE + x;
                         const uint32_t ctxSig = table_cnt[patternSigCtx][g_scan4x4[codeParams.scanType][scanPosOffset]] + ctxSigOffset;
                         X265_CHECK(trSize > 4, "trSize check failure\n");
@@ -790,16 +819,12 @@ uint32_t Quant::rdoQuant(const CUData& cu, int16_t* dstCoeff, TextType ttype, ui
             else
             {
                 // non-psy path
+                primitives.cu[log2TrSize - 2].nonPsyRdoQuant(m_resiDctCoeff, costUncoded, &totalUncodedCost, &totalRdCost, blkPos);
+                blkPos = codeParams.scan[scanPosBase];
                 for (int y = 0; y < MLS_CG_SIZE; y++)
                 {
                     for (int x = 0; x < MLS_CG_SIZE; x++)
                     {
-                        int signCoef = m_resiDctCoeff[blkPos + x];            /* pre-quantization DCT coeff */
-                        costUncoded[blkPos + x] = ((int64_t)signCoef * signCoef) << scaleBits;
-
-                        totalUncodedCost += costUncoded[blkPos + x];
-                        totalRdCost += costUncoded[blkPos + x];
-
                         const uint32_t scanPosOffset =  y * MLS_CG_SIZE + x;
                         const uint32_t ctxSig = table_cnt[patternSigCtx][g_scan4x4[codeParams.scanType][scanPosOffset]] + ctxSigOffset;
                         X265_CHECK(trSize > 4, "trSize check failure\n");

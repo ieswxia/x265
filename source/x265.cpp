@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Steve Borho <steve@borho.org>
  *
@@ -26,7 +26,6 @@
 #endif
 
 #include "x265.h"
-#include "x265-extras.h"
 #include "x265cli.h"
 
 #include "input/input.h"
@@ -50,6 +49,7 @@
 #define CONSOLE_TITLE_SIZE 200
 #ifdef _WIN32
 #include <windows.h>
+#define SetThreadExecutionState(es)
 static char orgConsoleTitle[CONSOLE_TITLE_SIZE] = "";
 #else
 #define GetConsoleTitle(t, n)
@@ -72,15 +72,13 @@ struct CLIOptions
     ReconFile* recon;
     OutputFile* output;
     FILE*       qpfile;
-    FILE*       csvfpt;
-    const char* csvfn;
     const char* reconPlayCmd;
     const x265_api* api;
     x265_param* param;
+    x265_vmaf_data* vmafData;
     bool bProgress;
     bool bForceY4m;
     bool bDither;
-    int csvLogLevel;
     uint32_t seek;              // number of frames to skip from the beginning
     uint32_t framesToBeEncoded; // number of frames to encode
     uint64_t totalbytes;
@@ -96,11 +94,10 @@ struct CLIOptions
         recon = NULL;
         output = NULL;
         qpfile = NULL;
-        csvfpt = NULL;
-        csvfn = NULL;
         reconPlayCmd = NULL;
         api = NULL;
         param = NULL;
+        vmafData = NULL;
         framesToBeEncoded = seek = 0;
         totalbytes = 0;
         bProgress = true;
@@ -108,7 +105,6 @@ struct CLIOptions
         startTime = x265_mdate();
         prevUpdateTime = 0;
         bDither = false;
-        csvLogLevel = 0;
     }
 
     void destroy();
@@ -128,9 +124,6 @@ void CLIOptions::destroy()
     if (qpfile)
         fclose(qpfile);
     qpfile = NULL;
-    if (csvfpt)
-        fclose(csvfpt);
-    csvfpt = NULL;
     if (output)
         output->release();
     output = NULL;
@@ -225,6 +218,14 @@ bool CLIOptions::parse(int argc, char **argv)
         x265_log(NULL, X265_LOG_ERROR, "param alloc failed\n");
         return true;
     }
+#if ENABLE_LIBVMAF
+    vmafData = (x265_vmaf_data*)x265_malloc(sizeof(x265_vmaf_data));
+    if(!vmafData)
+    {
+        x265_log(NULL, X265_LOG_ERROR, "vmaf data alloc failed\n");
+        return true;
+    }
+#endif
 
     if (api->param_default_preset(param, preset, tune) < 0)
     {
@@ -291,8 +292,6 @@ bool CLIOptions::parse(int argc, char **argv)
             if (0) ;
             OPT2("frame-skip", "seek") this->seek = (uint32_t)x265_atoi(optarg, bError);
             OPT("frames") this->framesToBeEncoded = (uint32_t)x265_atoi(optarg, bError);
-            OPT("csv") this->csvfn = optarg;
-            OPT("csv-log-level") this->csvLogLevel = x265_atoi(optarg, bError);
             OPT("no-progress") this->bProgress = false;
             OPT("output") outputfn = optarg;
             OPT("input") inputfn = optarg;
@@ -312,9 +311,15 @@ bool CLIOptions::parse(int argc, char **argv)
                 if (!this->qpfile)
                     x265_log_file(param, X265_LOG_ERROR, "%s qpfile not found or error in opening qp file\n", optarg);
             }
+            OPT("fullhelp")
+            {
+                param->logLevel = X265_LOG_FULL;
+                printVersion(param, api);
+                showHelp(param);
+                break;
+            }
             else
                 bError |= !!api->param_parse(param, long_options[long_options_index].name, optarg);
-
             if (bError)
             {
                 const char *name = long_options_index > 0 ? long_options[long_options_index].name : argv[optind - 2];
@@ -367,6 +372,7 @@ bool CLIOptions::parse(int argc, char **argv)
     info.skipFrames = seek;
     info.frameCount = 0;
     getParamAspectRatio(param, info.sarWidth, info.sarHeight);
+
 
     this->input = InputFile::open(info, this->bForceY4m);
     if (!this->input || this->input->isFail())
@@ -444,7 +450,30 @@ bool CLIOptions::parse(int argc, char **argv)
                     param->sourceWidth, param->sourceHeight, param->fpsNum, param->fpsDenom,
                     x265_source_csp_names[param->internalCsp]);
     }
+#if ENABLE_LIBVMAF
+    if (!reconfn)
+    {
+        x265_log(param, X265_LOG_ERROR, "recon file must be specified to get VMAF score, try --help for help\n");
+        return true;
+    }
+    const char *str = strrchr(info.filename, '.');
 
+    if (!strcmp(str, ".y4m"))
+    {
+        x265_log(param, X265_LOG_ERROR, "VMAF supports YUV file format only.\n");
+        return true; 
+    }
+    if(param->internalCsp == X265_CSP_I420 || param->internalCsp == X265_CSP_I422 || param->internalCsp == X265_CSP_I444)
+    {
+        vmafData->reference_file = x265_fopen(inputfn, "rb");
+        vmafData->distorted_file = x265_fopen(reconfn, "rb");
+    }
+    else
+    {
+        x265_log(param, X265_LOG_ERROR, "VMAF will support only yuv420p, yu422p, yu444p, yuv420p10le, yuv422p10le, yuv444p10le formats.\n");
+        return true;
+    }
+#endif
     this->output = OutputFile::open(outputfn, info);
     if (this->output->isFail())
     {
@@ -529,8 +558,7 @@ static int get_argv_utf8(int *argc_ptr, char ***argv_ptr)
  * 1 - unable to parse command line
  * 2 - unable to open encoder
  * 3 - unable to generate stream headers
- * 4 - encoder abort
- * 5 - unable to open csv file */
+ * 4 - encoder abort */
 
 int main(int argc, char **argv)
 {
@@ -561,7 +589,9 @@ int main(int argc, char **argv)
 
     x265_param* param = cliopt.param;
     const x265_api* api = cliopt.api;
-
+#if ENABLE_LIBVMAF
+    x265_vmaf_data* vmafdata = cliopt.vmafData;
+#endif
     /* This allows muxers to modify bitstream format */
     cliopt.output->setParam(param);
 
@@ -585,28 +615,15 @@ int main(int argc, char **argv)
     /* get the encoder parameters post-initialization */
     api->encoder_parameters(encoder, param);
 
-    if (cliopt.csvfn)
-    {
-        cliopt.csvfpt = x265_csvlog_open(*api, *param, cliopt.csvfn, cliopt.csvLogLevel);
-        if (!cliopt.csvfpt)
-        {
-            x265_log_file(param, X265_LOG_ERROR, "Unable to open CSV log file <%s>, aborting\n", cliopt.csvfn);
-            cliopt.destroy();
-            if (cliopt.api)
-                cliopt.api->param_free(cliopt.param);
-            exit(5);
-        }
-    }
-
-    /* Control-C handler */
+     /* Control-C handler */
     if (signal(SIGINT, sigint_handler) == SIG_ERR)
         x265_log(param, X265_LOG_ERROR, "Unable to register CTRL+C handler: %s\n", strerror(errno));
 
     x265_picture pic_orig, pic_out;
     x265_picture *pic_in = &pic_orig;
-    /* Allocate recon picture if analysisMode is enabled */
+    /* Allocate recon picture if analysis save/load is enabled */
     std::priority_queue<int64_t>* pts_queue = cliopt.output->needPTS() ? new std::priority_queue<int64_t>() : NULL;
-    x265_picture *pic_recon = (cliopt.recon || !!param->analysisMode || pts_queue || reconPlay || cliopt.csvLogLevel) ? &pic_out : NULL;
+    x265_picture *pic_recon = (cliopt.recon || param->analysisSave || param->analysisLoad || pts_queue || reconPlay || param->csvLogLevel) ? &pic_out : NULL;
     uint32_t inFrameCount = 0;
     uint32_t outFrameCount = 0;
     x265_nal *p_nal;
@@ -663,7 +680,7 @@ int main(int argc, char **argv)
         {
             if (pic_in->bitDepth > param->internalBitDepth && cliopt.bDither)
             {
-                x265_dither_image(*api, *pic_in, cliopt.input->getWidth(), cliopt.input->getHeight(), errorBuf, param->internalBitDepth);
+                x265_dither_image(pic_in, cliopt.input->getWidth(), cliopt.input->getHeight(), errorBuf, param->internalBitDepth);
                 pic_in->bitDepth = param->internalBitDepth;
             }
             /* Overwrite PTS */
@@ -697,8 +714,6 @@ int main(int argc, char **argv)
         }
 
         cliopt.printStatus(outFrameCount);
-        if (numEncoded && cliopt.csvLogLevel)
-            x265_csvlog_frame(cliopt.csvfpt, *param, *pic_recon, cliopt.csvLogLevel);
     }
 
     /* Flush the encoder */
@@ -729,13 +744,11 @@ int main(int argc, char **argv)
         }
 
         cliopt.printStatus(outFrameCount);
-        if (numEncoded && cliopt.csvLogLevel)
-            x265_csvlog_frame(cliopt.csvfpt, *param, *pic_recon, cliopt.csvLogLevel);
 
         if (!numEncoded)
             break;
     }
-
+  
     /* clear progress report */
     if (cliopt.bProgress)
         fprintf(stderr, "%*s\r", 80, " ");
@@ -745,8 +758,12 @@ fail:
     delete reconPlay;
 
     api->encoder_get_stats(encoder, &stats, sizeof(stats));
-    if (cliopt.csvfpt && !b_ctrl_c)
-        x265_csvlog_encode(cliopt.csvfpt, *api, *param, stats, cliopt.csvLogLevel, argc, argv);
+    if (param->csvfn && !b_ctrl_c)
+#if ENABLE_LIBVMAF
+        api->vmaf_encoder_log(encoder, argc, argv, param, vmafdata);
+#else
+        api->encoder_log(encoder, argc, argv);
+#endif
     api->encoder_close(encoder);
 
     int64_t second_largest_pts = 0;

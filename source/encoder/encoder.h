@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Steve Borho <steve@borho.org>
  *
@@ -26,12 +26,15 @@
 
 #include "common.h"
 #include "slice.h"
+#include "threading.h"
 #include "scalinglist.h"
 #include "x265.h"
 #include "nal.h"
-
+#include "framedata.h"
+#ifdef ENABLE_HDR10_PLUS
+    #include "dynamicHDR10/hdr10plus.h"
+#endif
 struct x265_encoder {};
-
 namespace X265_NS {
 // private namespace
 extern const char g_sliceTypeToChar[3];
@@ -68,6 +71,61 @@ struct EncStats
 
     void addSsim(double ssim);
 };
+
+#define MAX_NUM_REF_IDX 64
+
+struct RefIdxLastGOP
+{
+    int numRefIdxDefault[2];
+    int numRefIdxl0[MAX_NUM_REF_IDX];
+    int numRefIdxl1[MAX_NUM_REF_IDX];
+};
+
+struct RPSListNode
+{
+    int idx;
+    int count;
+    RPS* rps;
+    RPSListNode* next;
+    RPSListNode* prior;
+};
+
+struct cuLocation
+{
+    bool skipWidth;
+    bool skipHeight;
+    uint32_t heightInCU;
+    uint32_t widthInCU;
+    uint32_t oddRowIndex;
+    uint32_t evenRowIndex;
+    uint32_t switchCondition;
+
+    void init(x265_param* param)
+    {
+        skipHeight = false;
+        skipWidth = false;
+        heightInCU = (param->sourceHeight + param->maxCUSize - 1) >> param->maxLog2CUSize;
+        widthInCU = (param->sourceWidth + param->maxCUSize - 1) >> param->maxLog2CUSize;
+        evenRowIndex = 0;
+        oddRowIndex = param->num4x4Partitions * widthInCU;
+        switchCondition = 0; // To switch between odd and even rows
+    }
+};
+
+struct puOrientation
+{
+    bool isVert;
+    bool isRect;
+    bool isAmp;
+
+    void init()
+    {
+        isRect = false;
+        isAmp = false;
+        isVert = false;
+    }
+};
+
 
 class FrameEncoder;
 class DPB;
@@ -109,12 +167,14 @@ public:
     FrameEncoder*      m_frameEncoder[X265_MAX_FRAME_THREADS];
     DPB*               m_dpb;
     Frame*             m_exportedPic;
-    FILE*              m_analysisFile;
+    FILE*              m_analysisFileIn;
+    FILE*              m_analysisFileOut;
     x265_param*        m_param;
     x265_param*        m_latestParam;     // Holds latest param during a reconfigure
     RateControl*       m_rateControl;
     Lookahead*         m_lookahead;
 
+    bool               m_externalFlush;
     /* Collect statistics globally */
     EncStats           m_analyzeAll;
     EncStats           m_analyzeI;
@@ -131,13 +191,51 @@ public:
     bool               m_bZeroLatency;     // x265_encoder_encode() returns NALs for the input picture, zero lag
     bool               m_aborted;          // fatal error detected
     bool               m_reconfigure;      // Encoder reconfigure in progress
+    bool               m_reconfigureRc;
 
     /* Begin intra refresh when one not in progress or else begin one as soon as the current 
      * one is done. Requires bIntraRefresh to be set.*/
     int                m_bQueuedIntraRefresh;
 
+    /* For optimising slice QP */
+    Lock               m_sliceQpLock;
+    int                m_iFrameNum;   
+    int                m_iPPSQpMinus26;
+    int64_t            m_iBitsCostSum[QP_MAX_MAX + 1];
+    Lock               m_sliceRefIdxLock;
+    RefIdxLastGOP      m_refIdxLastGOP;
+
+    Lock               m_rpsInSpsLock;
+    int                m_rpsInSpsCount;
+    /* For HDR*/
+    double                m_cB;
+    double                m_cR;
+
+    int                     m_bToneMap; // Enables tone-mapping
+
+#ifdef ENABLE_HDR10_PLUS
+    const hdr10plus_api     *m_hdr10plus_api;
+    uint8_t                 **m_cim;
+    int                     m_numCimInfo;
+#endif
+
+    x265_sei_payload        m_prevTonemapPayload;
+
+    /* Collect frame level feature data */
+    uint64_t*               m_rdCost;
+    uint64_t*               m_variance;
+    uint32_t*               m_trainingCount;
+    int32_t                 m_startPoint;
+    Lock                    m_dynamicRefineLock;
+
     Encoder();
-    ~Encoder() {}
+    ~Encoder()
+    {
+#ifdef ENABLE_HDR10_PLUS
+        if (m_prevTonemapPayload.payload != NULL)
+            X265_FREE(m_prevTonemapPayload.payload);
+#endif
+    };
 
     void create();
     void stopJobs();
@@ -146,6 +244,18 @@ public:
     int encode(const x265_picture* pic, x265_picture *pic_out);
 
     int reconfigureParam(x265_param* encParam, x265_param* param);
+
+    bool isReconfigureRc(x265_param* latestParam, x265_param* param_in);
+
+    void copyCtuInfo(x265_ctu_info_t** frameCtuInfo, int poc);
+
+    int copySlicetypePocAndSceneCut(int *slicetype, int *poc, int *sceneCut);
+
+    int getRefFrameList(PicYuv** l0, PicYuv** l1, int sliceType, int poc, int* pocL0, int* pocL1);
+
+    int setAnalysisDataAfterZScan(x265_analysis_data *analysis_data, Frame* curFrame);
+
+    int setAnalysisData(x265_analysis_data *analysis_data, int poc, uint32_t cuBytes);
 
     void getStreamHeaders(NALList& list, Entropy& sbacCoder, Bitstream& bs);
 
@@ -165,13 +275,27 @@ public:
 
     void freeAnalysis(x265_analysis_data* analysis);
 
-    void readAnalysisFile(x265_analysis_data* analysis, int poc);
+    void allocAnalysis2Pass(x265_analysis_2Pass* analysis, int sliceType);
+
+    void freeAnalysis2Pass(x265_analysis_2Pass* analysis, int sliceType);
+
+    void readAnalysisFile(x265_analysis_data* analysis, int poc, const x265_picture* picIn);
+
+    int getCUIndex(cuLocation* cuLoc, uint32_t* count, int bytes, int flag);
+
+    int getPuShape(puOrientation* puOrient, int partSize, int numCTU);
 
     void writeAnalysisFile(x265_analysis_data* pic, FrameData &curEncData);
-
+    void readAnalysis2PassFile(x265_analysis_2Pass* analysis2Pass, int poc, int sliceType);
+    void writeAnalysis2PassFile(x265_analysis_2Pass* analysis2Pass, FrameData &curEncData, int slicetype);
     void finishFrameStats(Frame* pic, FrameEncoder *curEncoder, x265_frame_stats* frameStats, int inPoc);
 
     void calcRefreshInterval(Frame* frameEnc);
+
+    void initRefIdx();
+    void analyseRefIdx(int *numRefIdx);
+    void updateRefIdx();
+    bool computeSPSRPSIndex();
 
 protected:
 

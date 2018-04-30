@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Steve Borho <steve@borho.org>
  *
@@ -102,11 +102,10 @@ public:
     void setThreadNodeAffinity(void *numaMask);
     int  tryAcquireSleepingThread(sleepbitmap_t firstTryBitmap, sleepbitmap_t secondTryBitmap);
     int  tryBondPeers(int maxPeers, sleepbitmap_t peerBitmap, BondedTaskGroup& master);
-
-    static ThreadPool* allocThreadPools(x265_param* p, int& numPools);
-
+    static ThreadPool* allocThreadPools(x265_param* p, int& numPools, bool isThreadsReserved);
     static int  getCpuCount();
     static int  getNumaNodeCount();
+    static void getFrameThreadsCount(x265_param* p,int cpuCount);
 };
 
 /* Any worker thread may enlist the help of idle worker threads from the same

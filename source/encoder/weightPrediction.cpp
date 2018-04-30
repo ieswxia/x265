@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Author: Shazeb Nawaz Khan <shazeb@multicorewareinc.com>
  *         Steve Borho <steve@borho.org>
@@ -184,8 +184,7 @@ uint32_t weightCost(pixel *         fenc,
         int denom = w->log2WeightDenom;
         int round = denom ? 1 << (denom - 1) : 0;
         int correction = IF_INTERNAL_PREC - X265_DEPTH; /* intermediate interpolation depth */
-        int pwidth = ((width + 15) >> 4) << 4;
-
+        int pwidth = ((width + 31) >> 5) << 5;
         primitives.weight_pp(ref, weightTemp, stride, pwidth, height,
                              weight, round << correction, denom + correction, offset);
         ref = weightTemp;
@@ -323,7 +322,7 @@ void weightAnalyse(Slice& slice, Frame& frame, x265_param& param)
 
             if (!plane && diffPoc <= param.bframes + 1)
             {
-                mvs = fenc.lowresMvs[list][diffPoc - 1];
+                mvs = fenc.lowresMvs[list][diffPoc];
 
                 /* test whether this motion search was performed by lookahead */
                 if (mvs[0].x != 0x7FFF)

@@ -1,5 +1,5 @@
 /*****************************************************************************
-* Copyright (C) 2013 x265 project
+* Copyright (C) 2013-2017 MulticoreWare, Inc
 *
 * Author: Gopu Govindaswamy <gopu@multicorewareinc.com>
 *         Min Chen <chenm003@163.com>
@@ -90,7 +90,7 @@ void Deblock::deblockCU(const CUData* cu, const CUGeom& cuGeom, const int32_t di
     uint32_t numUnits = 1 << (cuGeom.log2CUSize - LOG2_UNIT_SIZE);
     setEdgefilterPU(cu, absPartIdx, dir, blockStrength, numUnits);
     setEdgefilterTU(cu, absPartIdx, 0, dir, blockStrength);
-    setEdgefilterMultiple(cu, absPartIdx, dir, 0, bsCuEdge(cu, absPartIdx, dir), blockStrength, numUnits);
+    setEdgefilterMultiple(absPartIdx, dir, 0, bsCuEdge(cu, absPartIdx, dir), blockStrength, numUnits);
 
     uint32_t numParts = cuGeom.numPartitions;
     for (uint32_t partIdx = absPartIdx; partIdx < absPartIdx + numParts; partIdx++)
@@ -114,22 +114,20 @@ void Deblock::deblockCU(const CUData* cu, const CUGeom& cuGeom, const int32_t di
     }
 }
 
-static inline uint32_t calcBsIdx(const CUData* cu, uint32_t absPartIdx, int32_t dir, int32_t edgeIdx, int32_t baseUnitIdx)
+static inline uint32_t calcBsIdx(uint32_t absPartIdx, int32_t dir, int32_t edgeIdx, int32_t baseUnitIdx)
 {
-    uint32_t numUnits = cu->m_slice->m_sps->numPartInCUSize;
-
     if (dir)
-        return g_rasterToZscan[g_zscanToRaster[absPartIdx] + edgeIdx * numUnits + baseUnitIdx];
+        return g_rasterToZscan[g_zscanToRaster[absPartIdx] + (edgeIdx << LOG2_RASTER_SIZE) + baseUnitIdx];
     else
-        return g_rasterToZscan[g_zscanToRaster[absPartIdx] + baseUnitIdx * numUnits + edgeIdx];
+        return g_rasterToZscan[g_zscanToRaster[absPartIdx] + (baseUnitIdx << LOG2_RASTER_SIZE) + edgeIdx];
 }
 
-void Deblock::setEdgefilterMultiple(const CUData* cu, uint32_t scanIdx, int32_t dir, int32_t edgeIdx, uint8_t value, uint8_t blockStrength[], uint32_t numUnits)
+void Deblock::setEdgefilterMultiple(uint32_t scanIdx, int32_t dir, int32_t edgeIdx, uint8_t value, uint8_t blockStrength[], uint32_t numUnits)
 {
     X265_CHECK(numUnits > 0, "numUnits edge filter check\n");
     for (uint32_t i = 0; i < numUnits; i++)
     {
-        const uint32_t bsidx = calcBsIdx(cu, scanIdx, dir, edgeIdx, i);
+        const uint32_t bsidx = calcBsIdx(scanIdx, dir, edgeIdx, i);
         blockStrength[bsidx] = value;
     }
 }
@@ -145,8 +143,8 @@ void Deblock::setEdgefilterTU(const CUData* cu, uint32_t absPartIdx, uint32_t tu
         return;
     }
 
-    uint32_t numUnits  = 1 << (log2TrSize - LOG2_UNIT_SIZE);
-    setEdgefilterMultiple(cu, absPartIdx, dir, 0, 2, blockStrength, numUnits);
+    uint32_t numUnits = 1 << (log2TrSize - LOG2_UNIT_SIZE);
+    setEdgefilterMultiple(absPartIdx, dir, 0, 2, blockStrength, numUnits);
 }
 
 void Deblock::setEdgefilterPU(const CUData* cu, uint32_t absPartIdx, int32_t dir, uint8_t blockStrength[], uint32_t numUnits)
@@ -158,30 +156,30 @@ void Deblock::setEdgefilterPU(const CUData* cu, uint32_t absPartIdx, int32_t dir
     {
     case SIZE_2NxN:
         if (EDGE_HOR == dir)
-            setEdgefilterMultiple(cu, absPartIdx, dir, hNumUnits, 1, blockStrength, numUnits);
+            setEdgefilterMultiple(absPartIdx, dir, hNumUnits, 1, blockStrength, numUnits);
         break;
     case SIZE_Nx2N:
         if (EDGE_VER == dir)
-            setEdgefilterMultiple(cu, absPartIdx, dir, hNumUnits, 1, blockStrength, numUnits);
+            setEdgefilterMultiple(absPartIdx, dir, hNumUnits, 1, blockStrength, numUnits);
         break;
     case SIZE_NxN:
-        setEdgefilterMultiple(cu, absPartIdx, dir, hNumUnits, 1, blockStrength, numUnits);
+        setEdgefilterMultiple(absPartIdx, dir, hNumUnits, 1, blockStrength, numUnits);
         break;
     case SIZE_2NxnU:
         if (EDGE_HOR == dir)
-            setEdgefilterMultiple(cu, absPartIdx, dir, qNumUnits, 1, blockStrength, numUnits);
+            setEdgefilterMultiple(absPartIdx, dir, qNumUnits, 1, blockStrength, numUnits);
         break;
     case SIZE_nLx2N:
         if (EDGE_VER == dir)
-            setEdgefilterMultiple(cu, absPartIdx, dir, qNumUnits, 1, blockStrength, numUnits);
+            setEdgefilterMultiple(absPartIdx, dir, qNumUnits, 1, blockStrength, numUnits);
         break;
     case SIZE_2NxnD:
         if (EDGE_HOR == dir)
-            setEdgefilterMultiple(cu, absPartIdx, dir, numUnits - qNumUnits, 1, blockStrength, numUnits);
+            setEdgefilterMultiple(absPartIdx, dir, numUnits - qNumUnits, 1, blockStrength, numUnits);
         break;
     case SIZE_nRx2N:
         if (EDGE_VER == dir)
-            setEdgefilterMultiple(cu, absPartIdx, dir, numUnits - qNumUnits, 1, blockStrength, numUnits);
+            setEdgefilterMultiple(absPartIdx, dir, numUnits - qNumUnits, 1, blockStrength, numUnits);
         break;
 
     case SIZE_2Nx2N:
@@ -209,21 +207,18 @@ uint8_t Deblock::getBoundaryStrength(const CUData* cuQ, int32_t dir, uint32_t pa
     static const MV zeroMv(0, 0);
     const Slice* const sliceQ = cuQ->m_slice;
     const Slice* const sliceP = cuP->m_slice;
-
-    const Frame* refP0 = sliceP->m_refFrameList[0][cuP->m_refIdx[0][partP]];
-    const Frame* refQ0 = sliceQ->m_refFrameList[0][cuQ->m_refIdx[0][partQ]];
+    const Frame* refP0 = (cuP->m_refIdx[0][partP] >= 0) ? sliceP->m_refFrameList[0][cuP->m_refIdx[0][partP]] : NULL;
+    const Frame* refQ0 = (cuQ->m_refIdx[0][partQ] >= 0) ? sliceQ->m_refFrameList[0][cuQ->m_refIdx[0][partQ]] : NULL;
     const MV& mvP0 = refP0 ? cuP->m_mv[0][partP] : zeroMv;
     const MV& mvQ0 = refQ0 ? cuQ->m_mv[0][partQ] : zeroMv;
-
     if (sliceQ->isInterP() && sliceP->isInterP())
     {
         return ((refP0 != refQ0) ||
                 (abs(mvQ0.x - mvP0.x) >= 4) || (abs(mvQ0.y - mvP0.y) >= 4)) ? 1 : 0;
     }
-
     // (sliceQ->isInterB() || sliceP->isInterB())
-    const Frame* refP1 = sliceP->m_refFrameList[1][cuP->m_refIdx[1][partP]];
-    const Frame* refQ1 = sliceQ->m_refFrameList[1][cuQ->m_refIdx[1][partQ]];
+    const Frame* refP1 = (cuP->m_refIdx[1][partP] >= 0) ? sliceP->m_refFrameList[1][cuP->m_refIdx[1][partP]] : NULL;
+    const Frame* refQ1 = (cuQ->m_refIdx[1][partQ] >= 0) ? sliceQ->m_refFrameList[1][cuQ->m_refIdx[1][partQ]] : NULL;
     const MV& mvP1 = refP1 ? cuP->m_mv[1][partP] : zeroMv;
     const MV& mvQ1 = refQ1 ? cuQ->m_mv[1][partQ] : zeroMv;
 
@@ -350,7 +345,7 @@ void Deblock::edgeFilterLuma(const CUData* cuQ, uint32_t absPartIdx, uint32_t de
     uint32_t numUnits = cuQ->m_slice->m_sps->numPartInCUSize >> depth;
     for (uint32_t idx = 0; idx < numUnits; idx++)
     {
-        uint32_t partQ = calcBsIdx(cuQ, absPartIdx, dir, edge, idx);
+        uint32_t partQ = calcBsIdx(absPartIdx, dir, edge, idx);
         uint32_t bs = blockStrength[partQ];
 
         if (!bs)
@@ -461,7 +456,7 @@ void Deblock::edgeFilterChroma(const CUData* cuQ, uint32_t absPartIdx, uint32_t 
     uint32_t numUnits = cuQ->m_slice->m_sps->numPartInCUSize >> (depth + chromaShift);
     for (uint32_t idx = 0; idx < numUnits; idx++)
     {
-        uint32_t partQ = calcBsIdx(cuQ, absPartIdx, dir, edge, idx << chromaShift);
+        uint32_t partQ = calcBsIdx(absPartIdx, dir, edge, idx << chromaShift);
         uint32_t bs = blockStrength[partQ];
 
         if (bs <= 1)

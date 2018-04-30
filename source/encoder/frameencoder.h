@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Shin Yee <shinyee@multicorewareinc.com>
  *          Min Chen <chenm003@163.com>
@@ -73,6 +73,7 @@ struct CTURow
 {
     Entropy           bufferedEntropy;  /* store CTU2 context for next row CTU0 */
     Entropy           rowGoOnCoder;     /* store context between CTUs, code bitstream if !SAO */
+    unsigned int      sliceId;          /* store current row slice id */
 
     FrameStats        rowStats;
 
@@ -94,13 +95,16 @@ struct CTURow
 
     /* count of completed CUs in this row */
     volatile uint32_t completed;
+    volatile uint32_t avgQPComputed;
 
     /* called at the start of each frame to initialize state */
-    void init(Entropy& initContext)
+    void init(Entropy& initContext, unsigned int sid)
     {
         active = false;
         busy = false;
         completed = 0;
+        avgQPComputed = 0;
+        sliceId = sid;
         memset(&rowStats, 0, sizeof(rowStats));
         rowGoOnCoder.load(initContext);
     }
@@ -134,6 +138,7 @@ public:
     volatile bool            m_bAllRowsStop;
     volatile int             m_completionCount;
     volatile int             m_vbvResetTriggerRow;
+    volatile int             m_sliceCnt;
 
     uint32_t                 m_numRows;
     uint32_t                 m_numCols;
@@ -142,6 +147,11 @@ public:
     uint32_t                 m_refLagRows;
 
     CTURow*                  m_rows;
+    uint16_t                 m_sliceAddrBits;
+    uint32_t                 m_sliceGroupSize;
+    uint32_t*                m_sliceBaseRow;    
+    uint32_t*                m_sliceMaxBlockRow;
+    int64_t                  m_rowSliceTotalBits[2];
     RateControlEntry         m_rce;
     SEIDecodedPictureHash    m_seiReconPictureDigest;
 
@@ -179,6 +189,7 @@ public:
     NoiseReduction*          m_nr;
     ThreadLocalData*         m_tld; /* for --no-wpp */
     Bitstream*               m_outStreams;
+    Bitstream*               m_backupStreams;
     uint32_t*                m_substreamSizes;
 
     CUGeom*                  m_cuGeoms;
@@ -214,11 +225,12 @@ protected:
     void compressFrame();
 
     /* called by compressFrame to generate final per-row bitstreams */
-    void encodeSlice();
+    void encodeSlice(uint32_t sliceAddr);
 
     void threadMain();
     int  collectCTUStatistics(const CUData& ctu, FrameStats* frameLog);
     void noiseReductionUpdate();
+    void computeAvgTrainingData();
 
     /* Called by WaveFront::findJob() */
     virtual void processRow(int row, int threadId);
@@ -228,6 +240,9 @@ protected:
     void enqueueRowFilter(int row)  { WaveFront::enqueueRow(row * 2 + 1); }
     void enableRowEncoder(int row)  { WaveFront::enableRow(row * 2 + 0); }
     void enableRowFilter(int row)   { WaveFront::enableRow(row * 2 + 1); }
+#if ENABLE_LIBVMAF
+    void vmafFrameLevelScore();
+#endif
 };
 }
 

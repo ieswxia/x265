@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Steve Borho <steve@borho.org>
  *          Mandar Gurav <mandar@multicorewareinc.com>
@@ -115,6 +115,52 @@ void sad_x4(const pixel* pix1, const pixel* pix2, const pixel* pix3, const pixel
         pix4 += frefstride;
         pix5 += frefstride;
     }
+}
+
+template<int lx, int ly>
+int ads_x4(int encDC[4], uint32_t *sums, int delta, uint16_t *costMvX, int16_t *mvs, int width, int thresh)
+{
+    int nmv = 0;
+    for (int16_t i = 0; i < width; i++, sums++)
+    {
+        int ads = abs(encDC[0] - long(sums[0]))
+            + abs(encDC[1] - long(sums[lx >> 1]))
+            + abs(encDC[2] - long(sums[delta]))
+            + abs(encDC[3] - long(sums[delta + (lx >> 1)]))
+            + costMvX[i];
+        if (ads < thresh)
+            mvs[nmv++] = i;
+    }
+    return nmv;
+}
+
+template<int lx, int ly>
+int ads_x2(int encDC[2], uint32_t *sums, int delta, uint16_t *costMvX, int16_t *mvs, int width, int thresh)
+{
+    int nmv = 0;
+    for (int16_t i = 0; i < width; i++, sums++)
+    {
+        int ads = abs(encDC[0] - long(sums[0]))
+            + abs(encDC[1] - long(sums[delta]))
+            + costMvX[i];
+        if (ads < thresh)
+            mvs[nmv++] = i;
+    }
+    return nmv;
+}
+
+template<int lx, int ly>
+int ads_x1(int encDC[1], uint32_t *sums, int, uint16_t *costMvX, int16_t *mvs, int width, int thresh)
+{
+    int nmv = 0;
+    for (int16_t i = 0; i < width; i++, sums++)
+    {
+        int ads = abs(encDC[0] - long(sums[0]))
+            + costMvX[i];
+        if (ads < thresh)
+            mvs[nmv++] = i;
+    }
+    return nmv;
 }
 
 template<int lx, int ly, class T1, class T2>
@@ -848,14 +894,13 @@ static void estimateCUPropagateCost(int* dst, const uint16_t* propagateIn, const
                                     const int32_t* invQscales, const double* fpsFactor, int len)
 {
     double fps = *fpsFactor / 256;  // range[0.01, 1.00]
-
     for (int i = 0; i < len; i++)
     {
         int intraCost = intraCosts[i];
         int interCost = X265_MIN(intraCosts[i], interCosts[i] & LOWRES_COST_MASK);
-        double propagateIntra  = intraCost * invQscales[i]; // Q16 x Q8.8 = Q24.8
+        double propagateIntra = intraCost * invQscales[i]; // Q16 x Q8.8 = Q24.8
         double propagateAmount = (double)propagateIn[i] + propagateIntra * fps; // Q16.0 + Q24.8 x Q0.x = Q25.0
-        double propagateNum    = (double)(intraCost - interCost); // Q32 - Q32 = Q33.0
+        double propagateNum = (double)(intraCost - interCost); // Q32 - Q32 = Q33.0
 
 #if 0
         // algorithm that output match to asm
@@ -866,76 +911,51 @@ static void estimateCUPropagateCost(int* dst, const uint16_t* propagateIn, const
         float propagateDenom = intraRcpError2 - intraRcpError1;
         dst[i] = (int)(propagateAmount * propagateNum * (double)propagateDenom + 0.5);
 #else
-        double propagateDenom  = (double)intraCost;             // Q32
+        double propagateDenom = (double)intraCost;             // Q32
         dst[i] = (int)(propagateAmount * propagateNum / propagateDenom + 0.5);
 #endif
+        }
+    //}
+}
+
+/* Conversion between double and Q8.8 fixed point (big-endian) for storage */
+static void cuTreeFix8Pack(uint16_t *dst, double *src, int count)
+{
+    for (int i = 0; i < count; i++)
+        dst[i] = (uint16_t)(src[i] * 256.0);
+}
+
+static void cuTreeFix8Unpack(double *dst, uint16_t *src, int count)
+{
+    for (int i = 0; i < count; i++)
+    {
+        int16_t qpFix8 = src[i];
+        dst[i] = (double)(qpFix8) / 256.0;
     }
 }
 
 #if HIGH_BIT_DEPTH
-static void calcHDRStats_c(pixel *srcY, pixel* srcU, pixel* srcV, intptr_t stride, intptr_t strideC, int width, int height, double *outsum, 
-                           pixel *outMax, const pixel minPix, const pixel maxPix, const int hShift, const int vShift)
+static pixel planeClipAndMax_c(pixel *src, intptr_t stride, int width, int height, uint64_t *outsum, 
+                               const pixel minPix, const pixel maxPix)
 {
-    pixel rgb[3];
-    uint16_t maxRGB = 0, maxLumaLevel = 0;
-    uint64_t rowsumLuma = 0;
-    double rowavgLuma = 0;
+    pixel maxLumaLevel = 0;
+    uint64_t sumLuma = 0;
 
-    uint16_t minLegal = (uint16_t)MIN_HDR_LEGAL_RANGE, maxLegal = (uint16_t)MAX_HDR_LEGAL_RANGE;
-
-    for (int r = 0; r < height >> vShift; r++)
+    for (int r = 0; r < height; r++)
     {
-        rowsumLuma = 0;
-        for (int c = 0; c < width >> hShift; c++)
+        for (int c = 0; c < width; c++)
         {
-            pixel y = 0, cb = 0, cr = 0;
-            /* Clip luma of source picture to max and min, only if they are specified. Average luma values for RGB conversions */
-            if (!hShift && !vShift) /* YUV444 */
-            {
-                y = srcY[c] = x265_clip3((pixel)minPix, (pixel)maxPix, srcY[c]);
-                cb = srcU[c]; cr = srcV[c];
-            }
-            else if (hShift && !vShift) /* YUV422 */
-            {
-                srcY[2*c] = x265_clip3((pixel)minPix, (pixel)maxPix, srcY[2*c]);
-                srcY[2*c + 1] = x265_clip3((pixel)minPix, (pixel)maxPix, srcY[2*c + 1]);
-                y = (srcY[2*c] + srcY[2*c + 1]) >> 1;
-                cb = srcU[c]; cr = srcV[c];
-            }
-            else if (hShift && vShift) /* YUV420 */
-            {
-                srcY[2*c] = x265_clip3((pixel)minPix, (pixel)maxPix, srcY[2*c]);
-                srcY[2*c + 1] = x265_clip3((pixel)minPix, (pixel)maxPix, srcY[2*c + 1]);
-                srcY[stride + 2*c] = x265_clip3((pixel)minPix, (pixel)maxPix, srcY[stride + 2*c]);
-                srcY[stride + 2*c + 1] = x265_clip3((pixel)minPix, (pixel)maxPix, srcY[stride + 2*c + 1]);
-                y = (srcY[2*c] + srcY[2*c + 1] + srcY[stride + 2*c] + srcY[stride + 2*c + 1]) >> 2;
-                cb = srcU[c]; cr = srcV[c];
-            }
-            else if (!strideC) /* YUV400 */
-            {
-                y = srcY[c] = x265_clip3((pixel)minPix, (pixel)maxPix, srcY[c]);
-                cb = cr = 0;
-            }
-            /* Rec 2020 Yuv to RGB */
-            for (int i = 0; i < 3; i++)
-                rgb[i] = (pixel) (y * g_YUVtoRGB_BT2020[i][0] + (cb - CBCR_OFFSET) * g_YUVtoRGB_BT2020[i][1] + (cr - CBCR_OFFSET) * g_YUVtoRGB_BT2020[i][2]);
-            /* maxCLL and maxFALL */
-            maxRGB = X265_MAX(maxRGB, X265_MAX(rgb[0], X265_MAX(rgb[1], rgb[2])));
-            maxRGB = X265_MIN(X265_MAX(maxRGB, minLegal), maxLegal);
-            maxLumaLevel = (uint16_t) g_ST2084_PQTable[maxRGB - minLegal];
-            rowsumLuma += maxLumaLevel;
+            /* Clip luma of source picture to max and min*/
+            src[c] = x265_clip3((pixel)minPix, (pixel)maxPix, src[c]);
+            maxLumaLevel = X265_MAX(src[c], maxLumaLevel);
+            sumLuma += src[c];
         }
-        srcY += stride << vShift; 
-        if (strideC)
-        {
-            srcU += strideC;
-            srcV += strideC;
-        }
-        rowavgLuma += ((double)rowsumLuma / width);
+        src += stride;
     }
-    *outsum = rowavgLuma / height;
-    *outMax = maxLumaLevel;
+    *outsum = sumLuma;
+    return maxLumaLevel;
 }
+
 #endif
 }  // end anonymous namespace
 
@@ -966,28 +986,34 @@ void setupPixelPrimitives_c(EncoderPrimitives &p)
 {
 #define LUMA_PU(W, H) \
     p.pu[LUMA_ ## W ## x ## H].copy_pp = blockcopy_pp_c<W, H>; \
-    p.pu[LUMA_ ## W ## x ## H].addAvg = addAvg<W, H>; \
+    p.pu[LUMA_ ## W ## x ## H].addAvg[NONALIGNED] = addAvg<W, H>; \
+    p.pu[LUMA_ ## W ## x ## H].addAvg[ALIGNED] = addAvg<W, H>; \
     p.pu[LUMA_ ## W ## x ## H].sad = sad<W, H>; \
     p.pu[LUMA_ ## W ## x ## H].sad_x3 = sad_x3<W, H>; \
     p.pu[LUMA_ ## W ## x ## H].sad_x4 = sad_x4<W, H>; \
-    p.pu[LUMA_ ## W ## x ## H].pixelavg_pp = pixelavg_pp<W, H>;
-
+    p.pu[LUMA_ ## W ## x ## H].pixelavg_pp[NONALIGNED] = pixelavg_pp<W, H>; \
+    p.pu[LUMA_ ## W ## x ## H].pixelavg_pp[ALIGNED] = pixelavg_pp<W, H>;
 #define LUMA_CU(W, H) \
     p.cu[BLOCK_ ## W ## x ## H].sub_ps        = pixel_sub_ps_c<W, H>; \
-    p.cu[BLOCK_ ## W ## x ## H].add_ps        = pixel_add_ps_c<W, H>; \
+    p.cu[BLOCK_ ## W ## x ## H].add_ps[NONALIGNED]    = pixel_add_ps_c<W, H>; \
+    p.cu[BLOCK_ ## W ## x ## H].add_ps[ALIGNED] = pixel_add_ps_c<W, H>; \
     p.cu[BLOCK_ ## W ## x ## H].copy_sp       = blockcopy_sp_c<W, H>; \
     p.cu[BLOCK_ ## W ## x ## H].copy_ps       = blockcopy_ps_c<W, H>; \
     p.cu[BLOCK_ ## W ## x ## H].copy_ss       = blockcopy_ss_c<W, H>; \
-    p.cu[BLOCK_ ## W ## x ## H].blockfill_s   = blockfill_s_c<W>;  \
+    p.cu[BLOCK_ ## W ## x ## H].blockfill_s[NONALIGNED] = blockfill_s_c<W>;  \
+    p.cu[BLOCK_ ## W ## x ## H].blockfill_s[ALIGNED]    = blockfill_s_c<W>;  \
     p.cu[BLOCK_ ## W ## x ## H].cpy2Dto1D_shl = cpy2Dto1D_shl<W>; \
     p.cu[BLOCK_ ## W ## x ## H].cpy2Dto1D_shr = cpy2Dto1D_shr<W>; \
-    p.cu[BLOCK_ ## W ## x ## H].cpy1Dto2D_shl = cpy1Dto2D_shl<W>; \
+    p.cu[BLOCK_ ## W ## x ## H].cpy1Dto2D_shl[NONALIGNED] = cpy1Dto2D_shl<W>; \
+    p.cu[BLOCK_ ## W ## x ## H].cpy1Dto2D_shl[ALIGNED] = cpy1Dto2D_shl<W>; \
     p.cu[BLOCK_ ## W ## x ## H].cpy1Dto2D_shr = cpy1Dto2D_shr<W>; \
     p.cu[BLOCK_ ## W ## x ## H].psy_cost_pp   = psyCost_pp<BLOCK_ ## W ## x ## H>; \
     p.cu[BLOCK_ ## W ## x ## H].transpose     = transpose<W>; \
-    p.cu[BLOCK_ ## W ## x ## H].ssd_s         = pixel_ssd_s_c<W>; \
+    p.cu[BLOCK_ ## W ## x ## H].ssd_s[NONALIGNED]         = pixel_ssd_s_c<W>; \
+    p.cu[BLOCK_ ## W ## x ## H].ssd_s[ALIGNED] = pixel_ssd_s_c<W>; \
     p.cu[BLOCK_ ## W ## x ## H].var           = pixel_var<W>; \
-    p.cu[BLOCK_ ## W ## x ## H].calcresidual  = getResidual<W>; \
+    p.cu[BLOCK_ ## W ## x ## H].calcresidual[NONALIGNED]  = getResidual<W>; \
+    p.cu[BLOCK_ ## W ## x ## H].calcresidual[ALIGNED]     = getResidual<W>; \
     p.cu[BLOCK_ ## W ## x ## H].sse_pp        = sse<W, H, pixel, pixel>; \
     p.cu[BLOCK_ ## W ## x ## H].sse_ss        = sse<W, H, int16_t, int16_t>;
 
@@ -1016,6 +1042,32 @@ void setupPixelPrimitives_c(EncoderPrimitives &p)
     LUMA_PU(48, 64);
     LUMA_PU(64, 16);
     LUMA_PU(16, 64);
+
+    p.pu[LUMA_4x4].ads = ads_x1<4, 4>;
+    p.pu[LUMA_8x8].ads = ads_x1<8, 8>;
+    p.pu[LUMA_8x4].ads = ads_x2<8, 4>;
+    p.pu[LUMA_4x8].ads = ads_x2<4, 8>;
+    p.pu[LUMA_16x16].ads = ads_x4<16, 16>;
+    p.pu[LUMA_16x8].ads = ads_x2<16, 8>;
+    p.pu[LUMA_8x16].ads = ads_x2<8, 16>;
+    p.pu[LUMA_16x12].ads = ads_x1<16, 12>;
+    p.pu[LUMA_12x16].ads = ads_x1<12, 16>;
+    p.pu[LUMA_16x4].ads = ads_x1<16, 4>;
+    p.pu[LUMA_4x16].ads = ads_x1<4, 16>;
+    p.pu[LUMA_32x32].ads = ads_x4<32, 32>;
+    p.pu[LUMA_32x16].ads = ads_x2<32, 16>;
+    p.pu[LUMA_16x32].ads = ads_x2<16, 32>;
+    p.pu[LUMA_32x24].ads = ads_x4<32, 24>;
+    p.pu[LUMA_24x32].ads = ads_x4<24, 32>;
+    p.pu[LUMA_32x8].ads = ads_x4<32, 8>;
+    p.pu[LUMA_8x32].ads = ads_x4<8, 32>;
+    p.pu[LUMA_64x64].ads = ads_x4<64, 64>;
+    p.pu[LUMA_64x32].ads = ads_x2<64, 32>;
+    p.pu[LUMA_32x64].ads = ads_x2<32, 64>;
+    p.pu[LUMA_64x48].ads = ads_x4<64, 48>;
+    p.pu[LUMA_48x64].ads = ads_x4<48, 64>;
+    p.pu[LUMA_64x16].ads = ads_x4<64, 16>;
+    p.pu[LUMA_16x64].ads = ads_x4<16, 64>;
 
     p.pu[LUMA_4x4].satd   = satd_4x4;
     p.pu[LUMA_8x8].satd   = satd8<8, 8>;
@@ -1056,7 +1108,8 @@ void setupPixelPrimitives_c(EncoderPrimitives &p)
     p.cu[BLOCK_64x64].sa8d = sa8d16<64, 64>;
 
 #define CHROMA_PU_420(W, H) \
-    p.chroma[X265_CSP_I420].pu[CHROMA_420_ ## W ## x ## H].addAvg  = addAvg<W, H>;         \
+    p.chroma[X265_CSP_I420].pu[CHROMA_420_ ## W ## x ## H].addAvg[NONALIGNED]  = addAvg<W, H>;         \
+    p.chroma[X265_CSP_I420].pu[CHROMA_420_ ## W ## x ## H].addAvg[ALIGNED]  = addAvg<W, H>;         \
     p.chroma[X265_CSP_I420].pu[CHROMA_420_ ## W ## x ## H].copy_pp = blockcopy_pp_c<W, H>; \
 
     CHROMA_PU_420(2, 2);
@@ -1119,7 +1172,8 @@ void setupPixelPrimitives_c(EncoderPrimitives &p)
     p.chroma[X265_CSP_I420].cu[BLOCK_420_ ## W ## x ## H].copy_ps = blockcopy_ps_c<W, H>; \
     p.chroma[X265_CSP_I420].cu[BLOCK_420_ ## W ## x ## H].copy_ss = blockcopy_ss_c<W, H>; \
     p.chroma[X265_CSP_I420].cu[BLOCK_420_ ## W ## x ## H].sub_ps = pixel_sub_ps_c<W, H>;  \
-    p.chroma[X265_CSP_I420].cu[BLOCK_420_ ## W ## x ## H].add_ps = pixel_add_ps_c<W, H>;
+    p.chroma[X265_CSP_I420].cu[BLOCK_420_ ## W ## x ## H].add_ps[NONALIGNED] = pixel_add_ps_c<W, H>; \
+    p.chroma[X265_CSP_I420].cu[BLOCK_420_ ## W ## x ## H].add_ps[ALIGNED] = pixel_add_ps_c<W, H>;
 
     CHROMA_CU_420(2, 2)
     CHROMA_CU_420(4, 4)
@@ -1133,7 +1187,8 @@ void setupPixelPrimitives_c(EncoderPrimitives &p)
     p.chroma[X265_CSP_I420].cu[BLOCK_64x64].sa8d = sa8d16<32, 32>;
 
 #define CHROMA_PU_422(W, H) \
-    p.chroma[X265_CSP_I422].pu[CHROMA_422_ ## W ## x ## H].addAvg  = addAvg<W, H>;         \
+    p.chroma[X265_CSP_I422].pu[CHROMA_422_ ## W ## x ## H].addAvg[NONALIGNED]  = addAvg<W, H>;         \
+    p.chroma[X265_CSP_I422].pu[CHROMA_422_ ## W ## x ## H].addAvg[ALIGNED]  = addAvg<W, H>;         \
     p.chroma[X265_CSP_I422].pu[CHROMA_422_ ## W ## x ## H].copy_pp = blockcopy_pp_c<W, H>; \
 
     CHROMA_PU_422(2, 4);
@@ -1196,7 +1251,8 @@ void setupPixelPrimitives_c(EncoderPrimitives &p)
     p.chroma[X265_CSP_I422].cu[BLOCK_422_ ## W ## x ## H].copy_ps = blockcopy_ps_c<W, H>; \
     p.chroma[X265_CSP_I422].cu[BLOCK_422_ ## W ## x ## H].copy_ss = blockcopy_ss_c<W, H>; \
     p.chroma[X265_CSP_I422].cu[BLOCK_422_ ## W ## x ## H].sub_ps = pixel_sub_ps_c<W, H>; \
-    p.chroma[X265_CSP_I422].cu[BLOCK_422_ ## W ## x ## H].add_ps = pixel_add_ps_c<W, H>;
+    p.chroma[X265_CSP_I422].cu[BLOCK_422_ ## W ## x ## H].add_ps[NONALIGNED] = pixel_add_ps_c<W, H>; \
+    p.chroma[X265_CSP_I422].cu[BLOCK_422_ ## W ## x ## H].add_ps[ALIGNED] = pixel_add_ps_c<W, H>;
 
     CHROMA_CU_422(2, 4)
     CHROMA_CU_422(4, 8)
@@ -1212,7 +1268,7 @@ void setupPixelPrimitives_c(EncoderPrimitives &p)
     p.weight_pp = weight_pp_c;
     p.weight_sp = weight_sp_c;
 
-    p.scale1D_128to64 = scale1D_128to64;
+    p.scale1D_128to64[NONALIGNED] = p.scale1D_128to64[ALIGNED] = scale1D_128to64;
     p.scale2D_64to32 = scale2D_64to32;
     p.frameInitLowres = frame_init_lowres_core;
     p.ssim_4x4x2_core = ssim_4x4x2_core;
@@ -1222,8 +1278,10 @@ void setupPixelPrimitives_c(EncoderPrimitives &p)
     p.planecopy_sp = planecopy_sp_c;
     p.planecopy_sp_shl = planecopy_sp_shl_c;
 #if HIGH_BIT_DEPTH
-    p.calcHDRStats = calcHDRStats_c;
+    p.planeClipAndMax = planeClipAndMax_c;
 #endif
     p.propagateCost = estimateCUPropagateCost;
+    p.fix8Unpack = cuTreeFix8Unpack;
+    p.fix8Pack = cuTreeFix8Pack;
 }
 }

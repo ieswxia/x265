@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Steve Borho <steve@borho.org>
  *          Min Chen <chenm003@163.com>
@@ -52,6 +52,7 @@ protected:
     pixelcmp_t sad;
     pixelcmp_x3_t sad_x3;
     pixelcmp_x4_t sad_x4;
+    pixelcmp_ads_t ads;
     pixelcmp_t satd;
     pixelcmp_t chromaSatd;
 
@@ -61,6 +62,7 @@ public:
 
     static const int COST_MAX = 1 << 28;
 
+    uint32_t* integral[INTEGRAL_PLANE_NUM];
     Yuv fencPUYuv;
     int partEnum;
     bool bChromaSATD;
@@ -90,7 +92,8 @@ public:
                chromaSatd(refYuv.getCrAddr(puPartIdx), refYuv.m_csize, fencPUYuv.m_buf[2], fencPUYuv.m_csize);
     }
 
-    int motionEstimate(ReferencePlanes* ref, const MV & mvmin, const MV & mvmax, const MV & qmvp, int numCandidates, const MV * mvc, int merange, MV & outQMv);
+    void refineMV(ReferencePlanes* ref, const MV& mvmin, const MV& mvmax, const MV& qmvp, MV& outQMv);
+    int motionEstimate(ReferencePlanes* ref, const MV & mvmin, const MV & mvmax, const MV & qmvp, int numCandidates, const MV * mvc, int merange, MV & outQMv, uint32_t maxSlices, pixel *srcReferencePlane = 0);
 
     int subpelCompare(ReferencePlanes* ref, const MV &qmv, pixelcmp_t);
 

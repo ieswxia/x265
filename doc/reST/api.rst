@@ -193,6 +193,36 @@ changes made to the parameters for auto-detection and other reasons::
 	 *      parameters to take this into account. */
 	int x265_encoder_reconfig(x265_encoder *, x265_param *);
 
+**x265_get_slicetype_poc_and_scenecut()** may be used to fetch slice type, poc and scene cut information mid-encode::
+
+    /* x265_get_slicetype_poc_and_scenecut:
+     *     get the slice type, poc and scene cut information for the current frame,
+     *     returns negative on error, 0 on success.
+     *     This API must be called after(poc >= lookaheadDepth + bframes + 2) condition check. */
+     int x265_get_slicetype_poc_and_scenecut(x265_encoder *encoder, int *slicetype, int *poc, int* sceneCut);
+
+**x265_get_ref_frame_list()** may be used to fetch forward and backward refrence list::
+
+    /* x265_get_ref_frame_list:
+     *     returns negative on error, 0 when access unit were output.
+     *     This API must be called after(poc >= lookaheadDepth + bframes + 2) condition check */
+     int x265_get_ref_frame_list(x265_encoder *encoder, x265_picyuv**, x265_picyuv**, int, int, int*, int*);
+ 
+**x265_encoder_ctu_info** may be used to provide additional CTU-specific information to the encoder::
+
+    /* x265_encoder_ctu_info:
+     *    Copy CTU information such as ctu address and ctu partition structure of all
+     *    CTUs in each frame. The function is invoked only if "--ctu-info" is enabled and
+     *    the encoder will wait for this copy to complete if enabled.*/
+    int x265_encoder_ctu_info(x265_encoder *encoder, int poc, x265_ctu_info_t** ctu);
+
+**x265_set_analysis_data()** may be used to recive analysis information from external application::
+
+    /* x265_set_analysis_data:
+     *     set the analysis data. The incoming analysis_data structure is assumed to be AVC-sized blocks.
+     *     returns negative on error, 0 access unit were output.*/
+     int x265_set_analysis_data(x265_encoder *encoder, x265_analysis_data *analysis_data, int poc, uint32_t cuBytes);
+
 Pictures
 ========
 
@@ -341,6 +371,14 @@ statistics from the encoder::
 Cleanup
 =======
 
+At the end of the encode, the application will want to trigger logging
+of the final encode statistics, if :option:`--csv` had been specified::
+
+ 	/* x265_encoder_log:
+	 *       write a line to the configured CSV file. If a CSV filename was not
+	 *       configured, or file open failed, this function will perform no write. */
+ 	void x265_encoder_log(x265_encoder *encoder, int argc, char **argv);
+ 	
 Finally, the encoder must be closed in order to free all of its
 resources. An encoder that has been flushed cannot be restarted and
 reused. Once **x265_encoder_close()** has been called, the encoder
@@ -360,7 +398,30 @@ CTU size::
 	 *     release library static allocations, reset configured CTU size */
 	void x265_cleanup(void);
 
+VMAF (Video Multi-Method Assessment Fusion)
+==========================================
 
+If you set the ENABLE_LIBVMAF cmake option to ON, then x265 will report per frame
+and aggregate VMAF score for the given input and dump the scores in csv file.
+The user also need to specify the :option:`--recon` in command line to get the VMAF scores.
+ 
+    /* x265_calculate_vmafScore:
+     *    returns VMAF score for the input video.
+     *    This api must be called only after encoding was done. */
+    double x265_calculate_vmafscore(x265_param*, x265_vmaf_data*);
+
+    /* x265_calculate_vmaf_framelevelscore:
+     *    returns VMAF score for each frame in a given input video. */
+    double x265_calculate_vmaf_framelevelscore(x265_vmaf_framedata*);
+    
+.. Note::
+
+    When setting ENABLE_LIBVMAF cmake option to ON, it is recommended to
+    also set ENABLE_SHARED to OFF to prevent build problems.  
+    We only need the static library from these builds.
+    
+    Binaries build with windows will not have VMAF support.
+      
 Multi-library Interface
 =======================
 

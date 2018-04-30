@@ -1,5 +1,5 @@
 /*****************************************************************************
-* Copyright (C) 2013 x265 project
+* Copyright (C) 2013-2017 MulticoreWare, Inc
 *
 * Authors: Steve Borho <steve@borho.org>
 *          Min Chen <chenm003@163.com>
@@ -111,6 +111,7 @@ public:
     int           m_bitsLeft;
     uint64_t      m_fracBits;
     EstBitsSbac   m_estBitsSbac;
+    double        m_meanQP;
 
     Entropy();
 
@@ -142,14 +143,14 @@ public:
 
     void codeVPS(const VPS& vps);
     void codeSPS(const SPS& sps, const ScalingList& scalingList, const ProfileTierLevel& ptl);
-    void codePPS(const PPS& pps);
-    void codeVUI(const VUI& vui, int maxSubTLayers);
+    void codePPS( const PPS& pps, bool filerAcross, int iPPSInitQpMinus26 );
+    void codeVUI(const VUI& vui, int maxSubTLayers, bool bEmitVUITimingInfo, bool bEmitVUIHRDInfo);
     void codeAUD(const Slice& slice);
     void codeHrdParameters(const HRDInfo& hrd, int maxSubTLayers);
 
-    void codeSliceHeader(const Slice& slice, FrameData& encData);
-    void codeSliceHeaderWPPEntryPoints(const Slice& slice, const uint32_t *substreamSizes, uint32_t maxOffset);
-    void codeShortTermRefPicSet(const RPS& rps);
+    void codeSliceHeader(const Slice& slice, FrameData& encData, uint32_t slice_addr, uint32_t slice_addr_bits, int sliceQp);
+    void codeSliceHeaderWPPEntryPoints(const uint32_t *substreamSizes, uint32_t numSubStreams, uint32_t maxOffset);
+    void codeShortTermRefPicSet(const RPS& rps, int idx);
     void finishSlice()                 { encodeBinTrm(1); finish(); dynamic_cast<Bitstream*>(m_bitIf)->writeByteAlignment(); }
 
     void encodeCTU(const CUData& cu, const CUGeom& cuGeom);

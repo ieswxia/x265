@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Deepthi Nandakumar <deepthi@multicorewareinc.com>
  *          Min Chen <chenm003@163.com>
@@ -71,23 +71,25 @@
 #define NUM_INTRA_MODE 35
 
 #if defined(__GNUC__)
+#define ALIGN_VAR_4(T, var)  T var __attribute__((aligned(4)))
 #define ALIGN_VAR_8(T, var)  T var __attribute__((aligned(8)))
 #define ALIGN_VAR_16(T, var) T var __attribute__((aligned(16)))
 #define ALIGN_VAR_32(T, var) T var __attribute__((aligned(32)))
-
+#define ALIGN_VAR_64(T, var) T var __attribute__((aligned(64)))
 #if defined(__MINGW32__)
 #define fseeko fseeko64
+#define ftello ftello64
 #endif
-
 #elif defined(_MSC_VER)
 
+#define ALIGN_VAR_4(T, var)  __declspec(align(4)) T var
 #define ALIGN_VAR_8(T, var)  __declspec(align(8)) T var
 #define ALIGN_VAR_16(T, var) __declspec(align(16)) T var
 #define ALIGN_VAR_32(T, var) __declspec(align(32)) T var
+#define ALIGN_VAR_64(T, var) __declspec(align(64)) T var
 #define fseeko _fseeki64
-
+#define ftello _ftelli64
 #endif // if defined(__GNUC__)
-
 #if HAVE_INT_TYPES_H
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
@@ -157,7 +159,6 @@ typedef uint64_t sse_t;
 #define MIN_QPSCALE     0.21249999999999999
 #define MAX_MAX_QPSCALE 615.46574234477100
 
-#define BITS_FOR_POC 8
 
 template<typename T>
 inline T x265_min(T a, T b) { return a < b ? a : b; }
@@ -175,7 +176,7 @@ typedef int16_t  coeff_t;      // transform coefficient
 
 #define X265_MIN(a, b) ((a) < (b) ? (a) : (b))
 #define X265_MAX(a, b) ((a) > (b) ? (a) : (b))
-#define COPY1_IF_LT(x, y) if ((y) < (x)) (x) = (y);
+#define COPY1_IF_LT(x, y) {if ((y) < (x)) (x) = (y);}
 #define COPY2_IF_LT(x, y, a, b) \
     if ((y) < (x)) \
     { \
@@ -206,7 +207,6 @@ typedef int16_t  coeff_t;      // transform coefficient
 
 // arbitrary, but low because SATD scores are 1/4 normal
 #define X265_LOOKAHEAD_QP (12 + QP_BD_OFFSET)
-#define X265_LOOKAHEAD_MAX 250
 
 // Use the same size blocks as x264.  Using larger blocks seems to give artificially
 // high cost estimates (intra and inter both suffer)
@@ -255,8 +255,9 @@ typedef int16_t  coeff_t;      // transform coefficient
 #define LOG2_UNIT_SIZE          2                           // log2(unitSize)
 #define UNIT_SIZE               (1 << LOG2_UNIT_SIZE)       // unit size of CU partition
 
-#define MAX_NUM_PARTITIONS      256
-#define NUM_4x4_PARTITIONS      (1U << (g_unitSizeDepth << 1)) // number of 4x4 units in max CU size
+#define LOG2_RASTER_SIZE        (MAX_LOG2_CU_SIZE - LOG2_UNIT_SIZE)
+#define RASTER_SIZE             (1 << LOG2_RASTER_SIZE)
+#define MAX_NUM_PARTITIONS      (RASTER_SIZE * RASTER_SIZE)
 
 #define MIN_PU_SIZE             4
 #define MIN_TU_SIZE             4
@@ -309,6 +310,7 @@ typedef int16_t  coeff_t;      // transform coefficient
 
 #define MAX_NUM_REF_PICS            16 // max. number of pictures used for reference
 #define MAX_NUM_REF                 16 // max. number of entries in picture reference list
+#define MAX_NUM_SHORT_TERM_RPS      64 // max. number of short term reference picture set in SPS
 
 #define REF_NOT_VALID               -1
 
@@ -323,6 +325,12 @@ typedef int16_t  coeff_t;      // transform coefficient
 #define MAX_NUM_TR_CATEGORIES       16                        // 32, 16, 8, 4 transform categories each for luma and chroma
 
 #define PIXEL_MAX ((1 << X265_DEPTH) - 1)
+
+#define INTEGRAL_PLANE_NUM          12 // 12 integral planes for 32x32, 32x24, 32x8, 24x32, 16x16, 16x12, 16x4, 12x16, 8x32, 8x8, 4x16 and 4x4.
+
+#define NAL_TYPE_OVERHEAD 2
+#define START_CODE_OVERHEAD 3 
+#define FILLER_OVERHEAD (NAL_TYPE_OVERHEAD + START_CODE_OVERHEAD + 1)
 
 namespace X265_NS {
 

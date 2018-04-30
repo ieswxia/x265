@@ -22,12 +22,11 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../.hg_archival.txt)
         set(hg_${key} ${value})
     endforeach()
     if(DEFINED hg_tag)
-        set(X265_VERSION ${hg_tag})
         set(X265_LATEST_TAG ${hg_tag})
-        set(X265_TAG_DISTANCE "0")
     elseif(DEFINED hg_node)
-        string(SUBSTRING "${hg_node}" 0 16 hg_id)
-        set(X265_VERSION "${hg_latesttag}+${hg_latesttagdistance}-${hg_id}")
+        set(X265_LATEST_TAG ${hg_latesttag})
+        set(X265_TAG_DISTANCE ${hg_latesttagdistance})
+        string(SUBSTRING "${hg_node}" 0 12 X265_REVISION_ID)
     endif()
 elseif(HG_EXECUTABLE AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../.hg)
     if(EXISTS "${HG_EXECUTABLE}.bat")
@@ -58,7 +57,7 @@ elseif(HG_EXECUTABLE AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../.hg)
         ERROR_QUIET
         OUTPUT_STRIP_TRAILING_WHITESPACE
         )
-    string(SUBSTRING "${X265_REVISION_ID}" 0 16 X265_REVISION_ID)
+    string(SUBSTRING "${X265_REVISION_ID}" 0 12 X265_REVISION_ID)
 
     if(X265_LATEST_TAG MATCHES "^r")
         string(SUBSTRING ${X265_LATEST_TAG} 1 -1 X265_LATEST_TAG)
@@ -66,7 +65,15 @@ elseif(HG_EXECUTABLE AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../.hg)
 elseif(GIT_EXECUTABLE AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../.git)
     execute_process(
         COMMAND
-        ${GIT_EXECUTABLE} describe --tags --abbrev=0 --first-parent
+        ${GIT_EXECUTABLE} rev-list --tags --max-count=1
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE X265_LATEST_TAG_COMMIT
+        ERROR_QUIET
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+    execute_process(
+        COMMAND
+        ${GIT_EXECUTABLE} describe --tags ${X265_LATEST_TAG_COMMIT}
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         OUTPUT_VARIABLE X265_LATEST_TAG
         ERROR_QUIET

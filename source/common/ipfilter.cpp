@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Deepthi Devaki <deepthidevaki@multicorewareinc.com>,
  *          Rajesh Paulraj <rajesh@multicorewareinc.com>
@@ -123,9 +123,8 @@ void interp_horiz_ps_c(const pixel* src, intptr_t srcStride, int16_t* dst, intpt
     const int16_t* coeff = (N == 4) ? g_chromaFilter[coeffIdx] : g_lumaFilter[coeffIdx];
     int headRoom = IF_INTERNAL_PREC - X265_DEPTH;
     int shift = IF_FILTER_PREC - headRoom;
-    int offset = -IF_INTERNAL_OFFS << shift;
+    int offset = (unsigned)-IF_INTERNAL_OFFS << shift;
     int blkheight = height;
-
     src -= N / 2 - 1;
 
     if (isRowExt)
@@ -209,10 +208,8 @@ void interp_vert_ps_c(const pixel* src, intptr_t srcStride, int16_t* dst, intptr
     const int16_t* c = (N == 4) ? g_chromaFilter[coeffIdx] : g_lumaFilter[coeffIdx];
     int headRoom = IF_INTERNAL_PREC - X265_DEPTH;
     int shift = IF_FILTER_PREC - headRoom;
-    int offset = -IF_INTERNAL_OFFS << shift;
-
+    int offset = (unsigned)-IF_INTERNAL_OFFS << shift;
     src -= (N / 2 - 1) * srcStride;
-
     int row, col;
     for (row = 0; row < height; row++)
     {
@@ -382,7 +379,8 @@ namespace X265_NS {
     p.chroma[X265_CSP_I420].pu[CHROMA_420_ ## W ## x ## H].filter_vps = interp_vert_ps_c<4, W, H>;  \
     p.chroma[X265_CSP_I420].pu[CHROMA_420_ ## W ## x ## H].filter_vsp = interp_vert_sp_c<4, W, H>;  \
     p.chroma[X265_CSP_I420].pu[CHROMA_420_ ## W ## x ## H].filter_vss = interp_vert_ss_c<4, W, H>; \
-    p.chroma[X265_CSP_I420].pu[CHROMA_420_ ## W ## x ## H].p2s = filterPixelToShort_c<W, H>;
+    p.chroma[X265_CSP_I420].pu[CHROMA_420_ ## W ## x ## H].p2s[NONALIGNED] = filterPixelToShort_c<W, H>;\
+    p.chroma[X265_CSP_I420].pu[CHROMA_420_ ## W ## x ## H].p2s[ALIGNED] = filterPixelToShort_c<W, H>;
 
 #define CHROMA_422(W, H) \
     p.chroma[X265_CSP_I422].pu[CHROMA_422_ ## W ## x ## H].filter_hpp = interp_horiz_pp_c<4, W, H>; \
@@ -391,7 +389,8 @@ namespace X265_NS {
     p.chroma[X265_CSP_I422].pu[CHROMA_422_ ## W ## x ## H].filter_vps = interp_vert_ps_c<4, W, H>;  \
     p.chroma[X265_CSP_I422].pu[CHROMA_422_ ## W ## x ## H].filter_vsp = interp_vert_sp_c<4, W, H>;  \
     p.chroma[X265_CSP_I422].pu[CHROMA_422_ ## W ## x ## H].filter_vss = interp_vert_ss_c<4, W, H>; \
-    p.chroma[X265_CSP_I422].pu[CHROMA_422_ ## W ## x ## H].p2s = filterPixelToShort_c<W, H>;
+    p.chroma[X265_CSP_I422].pu[CHROMA_422_ ## W ## x ## H].p2s[NONALIGNED] = filterPixelToShort_c<W, H>;\
+    p.chroma[X265_CSP_I422].pu[CHROMA_422_ ## W ## x ## H].p2s[ALIGNED] = filterPixelToShort_c<W, H>;
 
 #define CHROMA_444(W, H) \
     p.chroma[X265_CSP_I444].pu[LUMA_ ## W ## x ## H].filter_hpp = interp_horiz_pp_c<4, W, H>; \
@@ -400,7 +399,8 @@ namespace X265_NS {
     p.chroma[X265_CSP_I444].pu[LUMA_ ## W ## x ## H].filter_vps = interp_vert_ps_c<4, W, H>;  \
     p.chroma[X265_CSP_I444].pu[LUMA_ ## W ## x ## H].filter_vsp = interp_vert_sp_c<4, W, H>;  \
     p.chroma[X265_CSP_I444].pu[LUMA_ ## W ## x ## H].filter_vss = interp_vert_ss_c<4, W, H>; \
-    p.chroma[X265_CSP_I444].pu[LUMA_ ## W ## x ## H].p2s = filterPixelToShort_c<W, H>;
+    p.chroma[X265_CSP_I444].pu[LUMA_ ## W ## x ## H].p2s[NONALIGNED] = filterPixelToShort_c<W, H>;\
+    p.chroma[X265_CSP_I444].pu[LUMA_ ## W ## x ## H].p2s[ALIGNED] = filterPixelToShort_c<W, H>;
 
 #define LUMA(W, H) \
     p.pu[LUMA_ ## W ## x ## H].luma_hpp     = interp_horiz_pp_c<8, W, H>; \
@@ -410,7 +410,8 @@ namespace X265_NS {
     p.pu[LUMA_ ## W ## x ## H].luma_vsp     = interp_vert_sp_c<8, W, H>;  \
     p.pu[LUMA_ ## W ## x ## H].luma_vss     = interp_vert_ss_c<8, W, H>;  \
     p.pu[LUMA_ ## W ## x ## H].luma_hvpp    = interp_hv_pp_c<8, W, H>; \
-    p.pu[LUMA_ ## W ## x ## H].convert_p2s = filterPixelToShort_c<W, H>;
+    p.pu[LUMA_ ## W ## x ## H].convert_p2s[NONALIGNED] = filterPixelToShort_c<W, H>;\
+    p.pu[LUMA_ ## W ## x ## H].convert_p2s[ALIGNED] = filterPixelToShort_c<W, H>;
 
 void setupFilterPrimitives_c(EncoderPrimitives& p)
 {

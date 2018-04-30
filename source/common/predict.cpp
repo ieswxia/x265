@@ -1,5 +1,5 @@
 /*****************************************************************************
-* Copyright (C) 2013 x265 project
+* Copyright (C) 2013-2017 MulticoreWare, Inc
 *
 * Authors: Deepthi Nandakumar <deepthi@multicorewareinc.com>
 *          Min Chen <chenm003@163.com>
@@ -283,7 +283,11 @@ void Predict::predInterLumaShort(const PredictionUnit& pu, ShortYuv& dstSYuv, co
     int yFrac = mv.y & 3;
 
     if (!(yFrac | xFrac))
-        primitives.pu[partEnum].convert_p2s(src, srcStride, dst, dstStride);
+    {
+        bool srcbufferAlignCheck = (refPic.m_cuOffsetY[pu.ctuAddr] + refPic.m_buOffsetY[pu.cuAbsPartIdx + pu.puAbsPartIdx] + srcOffset) % 64 == 0;
+        bool dstbufferAlignCheck = (dstSYuv.getAddrOffset(pu.puAbsPartIdx, dstSYuv.m_size) % 64) == 0;
+        primitives.pu[partEnum].convert_p2s[srcStride % 64 == 0 && dstStride % 64 == 0 && srcbufferAlignCheck && dstbufferAlignCheck](src, srcStride, dst, dstStride);
+    }
     else if (!yFrac)
         primitives.pu[partEnum].luma_hps(src, srcStride, dst, dstStride, xFrac, 0);
     else if (!xFrac)
@@ -375,8 +379,10 @@ void Predict::predInterChromaShort(const PredictionUnit& pu, ShortYuv& dstSYuv, 
 
     if (!(yFrac | xFrac))
     {
-        primitives.chroma[m_csp].pu[partEnum].p2s(refCb, refStride, dstCb, dstStride);
-        primitives.chroma[m_csp].pu[partEnum].p2s(refCr, refStride, dstCr, dstStride);
+        bool srcbufferAlignCheckC = (refPic.m_cuOffsetC[pu.ctuAddr] + refPic.m_buOffsetC[pu.cuAbsPartIdx + pu.puAbsPartIdx] + refOffset) % 64 == 0;
+        bool dstbufferAlignCheckC = dstSYuv.getChromaAddrOffset(pu.puAbsPartIdx) % 64 == 0;
+        primitives.chroma[m_csp].pu[partEnum].p2s[refStride % 64 == 0 && dstStride % 64 == 0 && srcbufferAlignCheckC && dstbufferAlignCheckC](refCb, refStride, dstCb, dstStride);
+        primitives.chroma[m_csp].pu[partEnum].p2s[refStride % 64 == 0 && dstStride % 64 == 0 && srcbufferAlignCheckC && dstbufferAlignCheckC](refCr, refStride, dstCr, dstStride);
     }
     else if (!yFrac)
     {
@@ -671,17 +677,14 @@ void Predict::initIntraNeighbors(const CUData& cu, uint32_t absPartIdx, uint32_t
     int numIntraNeighbor;
     bool* bNeighborFlags = intraNeighbors->bNeighborFlags;
 
-    uint32_t numPartInWidth = 1 << (cu.m_log2CUSize[0] - LOG2_UNIT_SIZE - tuDepth);
-    uint32_t partIdxLT = cu.m_absIdxInCTU + absPartIdx;
-    uint32_t partIdxRT = g_rasterToZscan[g_zscanToRaster[partIdxLT] + numPartInWidth - 1];
-
     uint32_t tuSize = 1 << log2TrSize;
     int  tuWidthInUnits = tuSize >> log2UnitWidth;
     int  tuHeightInUnits = tuSize >> log2UnitHeight;
     int  aboveUnits = tuWidthInUnits << 1;
     int  leftUnits = tuHeightInUnits << 1;
-    int  partIdxStride = cu.m_slice->m_sps->numPartInCUSize;
-    uint32_t partIdxLB = g_rasterToZscan[g_zscanToRaster[partIdxLT] + ((tuHeightInUnits - 1) * partIdxStride)];
+    uint32_t partIdxLT = cu.m_absIdxInCTU + absPartIdx;
+    uint32_t partIdxRT = g_rasterToZscan[g_zscanToRaster[partIdxLT] + tuWidthInUnits - 1];
+    uint32_t partIdxLB = g_rasterToZscan[g_zscanToRaster[partIdxLT] + ((tuHeightInUnits - 1) << LOG2_RASTER_SIZE)];
 
     if (cu.m_slice->isIntra() || !cu.m_slice->m_pps->bConstrainedIntraPred)
     {
@@ -910,7 +913,7 @@ int Predict::isLeftAvailable(const CUData& cu, uint32_t partIdxLT, uint32_t part
 {
     const uint32_t rasterPartBegin = g_zscanToRaster[partIdxLT];
     const uint32_t rasterPartEnd = g_zscanToRaster[partIdxLB];
-    const uint32_t idxStep = cu.m_slice->m_sps->numPartInCUSize;
+    const uint32_t idxStep = RASTER_SIZE;
     int numIntra = 0;
 
     for (uint32_t rasterPart = rasterPartBegin; rasterPart <= rasterPartEnd; rasterPart += idxStep, bValidFlags--) // opposite direction

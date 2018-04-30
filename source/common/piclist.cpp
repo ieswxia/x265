@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Gopu Govindaswamy <gopu@multicorewareinc.com>
  *
@@ -113,6 +113,15 @@ Frame *PicList::popBack()
         temp->m_next = temp->m_prev = NULL;
         return temp;
     }
+    else
+        return NULL;
+}
+
+Frame* PicList::getCurFrame(void)
+{
+    Frame *curFrame = m_start;
+    if (curFrame != NULL)
+        return curFrame;
     else
         return NULL;
 }

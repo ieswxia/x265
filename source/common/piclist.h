@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Gopu Govindaswamy <gopu@multicorewareinc.com>
  *
@@ -61,6 +61,9 @@ public:
 
     /** Find frame with specified POC */
     Frame* getPOC(int poc);
+
+    /** Get the current Frame from the list **/
+    Frame* getCurFrame(void);
 
     /** Remove picture from list */
     void remove(Frame& pic);

@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Steve Borho <steve@borho.org>
  *          Min Chen <chenm003@163.com>
@@ -77,7 +77,7 @@
 #define BITS    "[32 bit]"
 #endif
 
-#if defined(ENABLE_ASSEMBLY)
+#if defined(ENABLE_ASSEMBLY) || HAVE_ALTIVEC
 #define ASM     ""
 #else
 #define ASM     "[noasm]"

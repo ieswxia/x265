@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Steve Borho <steve@borho.org>
  *          Min Chen <chenm003@163.com>
@@ -43,11 +43,17 @@ bool WaveFront::init(int numRows)
     if (m_externalDependencyBitmap)
         memset((void*)m_externalDependencyBitmap, 0, sizeof(uint32_t) * m_numWords);
 
+    m_row_to_idx = X265_MALLOC(uint32_t, m_numRows);
+    m_idx_to_row = X265_MALLOC(uint32_t, m_numRows);
+
     return m_internalDependencyBitmap && m_externalDependencyBitmap;
 }
 
 WaveFront::~WaveFront()
 {
+    x265_free((void*)m_row_to_idx);
+    x265_free((void*)m_idx_to_row);
+
     x265_free((void*)m_internalDependencyBitmap);
     x265_free((void*)m_externalDependencyBitmap);
 }

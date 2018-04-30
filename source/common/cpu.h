@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Loren Merritt <lorenm@u.washington.edu>
  *          Steve Borho <steve@borho.org>
@@ -50,7 +50,7 @@ extern "C" void PFX(safe_intel_cpu_indicator_init)(void);
 #endif
 
 namespace X265_NS {
-uint32_t cpu_detect(void);
+uint32_t cpu_detect(bool);
 
 struct cpu_name_t
 {

@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Deepthi Nandakumar <deepthi@multicorewareinc.com>
  *          Praveen Kumar Tiwari <praveen@multicorewareinc.com>
@@ -28,10 +28,9 @@
 namespace X265_NS {
 
 int   x265_check_params(x265_param *param);
-int   x265_set_globals(x265_param *param);
 void  x265_print_params(x265_param *param);
 void  x265_param_apply_fastfirstpass(x265_param *p);
-char* x265_param2string(x265_param *param);
+char* x265_param2string(x265_param *param, int padx, int pady);
 int   x265_atoi(const char *str, bool& bError);
 double x265_atof(const char *str, bool& bError);
 int   parseCpuName(const char *value, bool& bError);
@@ -54,8 +53,5 @@ int x265_param_apply_profile(x265_param *, const char *profile);
 int x265_param_parse(x265_param *p, const char *name, const char *value);
 #define PARAM_NS X265_NS
 #endif
-
-#define MAXPARAMSIZE 2000
 }
-
 #endif // ifndef X265_PARAM_H

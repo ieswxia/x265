@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2016 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Min Chen <chenm003@163.com>
  *          Dnyaneshwar Gorade <dnyaneshwar@multicorewareinc.com>
@@ -27,5 +27,6 @@
 
 void PFX(dct_4x4_neon)(const int16_t* src, int16_t* dst, intptr_t srcStride);
 void PFX(dct_8x8_neon)(const int16_t* src, int16_t* dst, intptr_t srcStride);
+void PFX(dct_16x16_neon)(const int16_t* src, int16_t* dst, intptr_t srcStride);
 
 #endif // ifndef X265_DCT8_ARM_H

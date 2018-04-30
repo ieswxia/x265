@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Deepthi Nandakumar <deepthi@multicorewareinc.com>
  *
@@ -54,7 +54,7 @@ int64_t x265_mdate(void)
 #endif
 }
 
-#define X265_ALIGNBYTES 32
+#define X265_ALIGNBYTES 64
 
 #if _WIN32
 #if defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR)

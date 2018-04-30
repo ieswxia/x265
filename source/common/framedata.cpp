@@ -1,5 +1,5 @@
 /*****************************************************************************
-* Copyright (C) 2013 x265 project
+* Copyright (C) 2013-2017 MulticoreWare, Inc
 *
 * Author: Steve Borho <steve@borho.org>
 *
@@ -37,14 +37,24 @@ bool FrameData::create(const x265_param& param, const SPS& sps, int csp)
     m_slice  = new Slice;
     m_picCTU = new CUData[sps.numCUsInFrame];
     m_picCsp = csp;
-
-    m_cuMemPool.create(0, param.internalCsp, sps.numCUsInFrame);
-    for (uint32_t ctuAddr = 0; ctuAddr < sps.numCUsInFrame; ctuAddr++)
-        m_picCTU[ctuAddr].initialize(m_cuMemPool, 0, param.internalCsp, ctuAddr);
-
+    m_spsrpsIdx = -1;
+    if (param.rc.bStatWrite)
+        m_spsrps = const_cast<RPS*>(sps.spsrps);
+    bool isallocated = m_cuMemPool.create(0, param.internalCsp, sps.numCUsInFrame, param);
+    if (isallocated)
+        for (uint32_t ctuAddr = 0; ctuAddr < sps.numCUsInFrame; ctuAddr++)
+            m_picCTU[ctuAddr].initialize(m_cuMemPool, 0, param, ctuAddr);
+    else
+        return false;
     CHECKED_MALLOC_ZERO(m_cuStat, RCStatCU, sps.numCUsInFrame);
     CHECKED_MALLOC(m_rowStat, RCStatRow, sps.numCuInHeight);
     reinit(sps);
+    
+    for (int i = 0; i < INTEGRAL_PLANE_NUM; i++)
+    {
+        m_meBuffer[i] = NULL;
+        m_meIntegral[i] = NULL;
+    }
     return true;
 
 fail:
@@ -67,4 +77,12 @@ void FrameData::destroy()
 
     X265_FREE(m_cuStat);
     X265_FREE(m_rowStat);
+    for (int i = 0; i < INTEGRAL_PLANE_NUM; i++)
+    {
+        if (m_meBuffer[i] != NULL)
+        {
+            X265_FREE(m_meBuffer[i]);
+            m_meBuffer[i] = NULL;
+        }
+    }
 }

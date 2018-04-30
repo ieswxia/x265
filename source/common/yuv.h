@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2015 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Steve Borho <steve@borho.org>
  *
@@ -38,7 +38,6 @@ class PicYuv;
 class Yuv
 {
 public:
-
     pixel*   m_buf[3];
 
     uint32_t m_size;
@@ -48,6 +47,7 @@ public:
     int      m_csp;
     int      m_hChromaShift;
     int      m_vChromaShift;
+    uint32_t *m_integral[2][MAX_NUM_REF][INTEGRAL_PLANE_NUM];
 
     Yuv();
 

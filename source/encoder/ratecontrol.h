@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Sumalatha Polureddy <sumalatha@multicorewareinc.com>
  *          Aarthi Priya Thirumalai <aarthi@multicorewareinc.com>
@@ -108,9 +108,11 @@ struct RateControlEntry
     int      coeffBits;
     bool     keptAsRef;
     bool     scenecut;
-
+    bool     isIdr;
     SEIPictureTiming *picTimingSEI;
     HRDTiming        *hrdTiming;
+    int      rpsIdx;
+    RPS      rpsData;
 };
 
 class RateControl
@@ -130,6 +132,7 @@ public:
     bool   m_isGrainEnabled;
     bool   m_isAbrReset;
     bool   m_isNextGop;
+    bool   m_initVbv;
     int    m_lastAbrResetPoc;
 
     double m_rateTolerance;
@@ -144,6 +147,8 @@ public:
     double m_rateFactorMaxIncrement; /* Don't allow RF above (CRF + this value). */
     double m_rateFactorMaxDecrement; /* don't allow RF below (this value). */
     double m_avgPFrameQp;
+    double m_bufferFillActual;
+    double m_bufferExcess;
     bool   m_isFirstMiniGop;
     Predictor m_pred[4];       /* Slice predictors to preidct bits for each Slice type - I,P,Bref and B */
     int64_t m_leadingNoBSatd;
@@ -162,6 +167,8 @@ public:
     double  m_accumPNorm;
     double  m_lastQScaleFor[3];  /* last qscale for a specific pict type, used for max_diff & ipb factor stuff */
     double  m_lstep;
+    double  m_lmin[3];
+    double  m_lmax[3];
     double  m_shortTermCplxSum;
     double  m_shortTermCplxCount;
     double  m_lastRceq;
@@ -228,6 +235,7 @@ public:
     RateControl(x265_param& p);
     bool init(const SPS& sps);
     void initHRD(SPS& sps);
+    void reconfigureRC();
 
     void setFinalFrameCount(int count);
     void terminate();          /* un-block all waiting functions so encoder may close */
@@ -236,8 +244,8 @@ public:
     // to be called for each curFrame to process RateControl and set QP
     int  rateControlStart(Frame* curFrame, RateControlEntry* rce, Encoder* enc);
     void rateControlUpdateStats(RateControlEntry* rce);
-    int  rateControlEnd(Frame* curFrame, int64_t bits, RateControlEntry* rce);
-    int  rowDiagonalVbvRateControl(Frame* curFrame, uint32_t row, RateControlEntry* rce, double& qpVbv);
+    int  rateControlEnd(Frame* curFrame, int64_t bits, RateControlEntry* rce, int *filler);
+    int  rowVbvRateControl(Frame* curFrame, uint32_t row, RateControlEntry* rce, double& qpVbv, uint32_t* m_sliceBaseRow, uint32_t sliceId);
     int  rateControlSliceType(int frameNum);
     bool cuTreeReadFor2Pass(Frame* curFrame);
     void hrdFullness(SEIBufferingPeriod* sei);
@@ -263,7 +271,7 @@ protected:
     void   accumPQpUpdate();
 
     int    getPredictorType(int lowresSliceType, int sliceType);
-    void   updateVbv(int64_t bits, RateControlEntry* rce);
+    int    updateVbv(int64_t bits, RateControlEntry* rce);
     void   updatePredictor(Predictor *p, double q, double var, double bits);
     double clipQscale(Frame* pic, RateControlEntry* rce, double q);
     void   updateVbvPlan(Encoder* enc);
@@ -278,6 +286,8 @@ protected:
     bool   findUnderflow(double *fills, int *t0, int *t1, int over, int framesCount);
     bool   fixUnderflow(int t0, int t1, double adjustment, double qscaleMin, double qscaleMax);
     double tuneQScaleForGrain(double rcOverflow);
+    void   splitdeltaPOC(char deltapoc[], RateControlEntry *rce);
+    void   splitbUsed(char deltapoc[], RateControlEntry *rce);
 };
 }
 #endif // ifndef X265_RATECONTROL_H

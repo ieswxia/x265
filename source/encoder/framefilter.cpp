@@ -1,5 +1,5 @@
 /*****************************************************************************
- * Copyright (C) 2013 x265 project
+ * Copyright (C) 2013-2017 MulticoreWare, Inc
  *
  * Authors: Chung Shin Yee <shinyee@multicorewareinc.com>
  *          Min Chen <chenm003@163.com>
@@ -35,6 +35,128 @@ using namespace X265_NS;
 static uint64_t computeSSD(pixel *fenc, pixel *rec, intptr_t stride, uint32_t width, uint32_t height);
 static float calculateSSIM(pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t stride2, uint32_t width, uint32_t height, void *buf, uint32_t& cnt);
 
+namespace X265_NS
+{
+    static void integral_init4h_c(uint32_t *sum, pixel *pix, intptr_t stride)
+    {
+        int32_t v = pix[0] + pix[1] + pix[2] + pix[3];
+        for (int16_t x = 0; x < stride - 4; x++)
+        {
+            sum[x] = v + sum[x - stride];
+            v += pix[x + 4] - pix[x];
+        }
+    }
+
+    static void integral_init8h_c(uint32_t *sum, pixel *pix, intptr_t stride)
+    {
+        int32_t v = pix[0] + pix[1] + pix[2] + pix[3] + pix[4] + pix[5] + pix[6] + pix[7];
+        for (int16_t x = 0; x < stride - 8; x++)
+        {
+            sum[x] = v + sum[x - stride];
+            v += pix[x + 8] - pix[x];
+        }
+    }
+
+    static void integral_init12h_c(uint32_t *sum, pixel *pix, intptr_t stride)
+    {
+        int32_t v = pix[0] + pix[1] + pix[2] + pix[3] + pix[4] + pix[5] + pix[6] + pix[7] +
+            pix[8] + pix[9] + pix[10] + pix[11];
+        for (int16_t x = 0; x < stride - 12; x++)
+        {
+            sum[x] = v + sum[x - stride];
+            v += pix[x + 12] - pix[x];
+        }
+    }
+
+    static void integral_init16h_c(uint32_t *sum, pixel *pix, intptr_t stride)
+    {
+        int32_t v = pix[0] + pix[1] + pix[2] + pix[3] + pix[4] + pix[5] + pix[6] + pix[7] +
+            pix[8] + pix[9] + pix[10] + pix[11] + pix[12] + pix[13] + pix[14] + pix[15];
+        for (int16_t x = 0; x < stride - 16; x++)
+        {
+            sum[x] = v + sum[x - stride];
+            v += pix[x + 16] - pix[x];
+        }
+    }
+
+    static void integral_init24h_c(uint32_t *sum, pixel *pix, intptr_t stride)
+    {
+        int32_t v = pix[0] + pix[1] + pix[2] + pix[3] + pix[4] + pix[5] + pix[6] + pix[7] +
+            pix[8] + pix[9] + pix[10] + pix[11] + pix[12] + pix[13] + pix[14] + pix[15] +
+            pix[16] + pix[17] + pix[18] + pix[19] + pix[20] + pix[21] + pix[22] + pix[23];
+        for (int16_t x = 0; x < stride - 24; x++)
+        {
+            sum[x] = v + sum[x - stride];
+            v += pix[x + 24] - pix[x];
+        }
+    }
+
+    static void integral_init32h_c(uint32_t *sum, pixel *pix, intptr_t stride)
+    {
+        int32_t v = pix[0] + pix[1] + pix[2] + pix[3] + pix[4] + pix[5] + pix[6] + pix[7] +
+            pix[8] + pix[9] + pix[10] + pix[11] + pix[12] + pix[13] + pix[14] + pix[15] +
+            pix[16] + pix[17] + pix[18] + pix[19] + pix[20] + pix[21] + pix[22] + pix[23] +
+            pix[24] + pix[25] + pix[26] + pix[27] + pix[28] + pix[29] + pix[30] + pix[31];
+        for (int16_t x = 0; x < stride - 32; x++)
+        {
+            sum[x] = v + sum[x - stride];
+            v += pix[x + 32] - pix[x];
+        }
+    }
+
+    static void integral_init4v_c(uint32_t *sum4, intptr_t stride)
+    {
+        for (int x = 0; x < stride; x++)
+            sum4[x] = sum4[x + 4 * stride] - sum4[x];
+    }
+
+    static void integral_init8v_c(uint32_t *sum8, intptr_t stride)
+    {
+        for (int x = 0; x < stride; x++)
+            sum8[x] = sum8[x + 8 * stride] - sum8[x];
+    }
+
+    static void integral_init12v_c(uint32_t *sum12, intptr_t stride)
+    {
+        for (int x = 0; x < stride; x++)
+            sum12[x] = sum12[x + 12 * stride] - sum12[x];
+    }
+
+    static void integral_init16v_c(uint32_t *sum16, intptr_t stride)
+    {
+        for (int x = 0; x < stride; x++)
+            sum16[x] = sum16[x + 16 * stride] - sum16[x];
+    }
+
+    static void integral_init24v_c(uint32_t *sum24, intptr_t stride)
+    {
+        for (int x = 0; x < stride; x++)
+            sum24[x] = sum24[x + 24 * stride] - sum24[x];
+    }
+
+    static void integral_init32v_c(uint32_t *sum32, intptr_t stride)
+    {
+        for (int x = 0; x < stride; x++)
+            sum32[x] = sum32[x + 32 * stride] - sum32[x];
+    }
+
+    void setupSeaIntegralPrimitives_c(EncoderPrimitives &p)
+    {
+        p.integral_initv[INTEGRAL_4] = integral_init4v_c;
+        p.integral_initv[INTEGRAL_8] = integral_init8v_c;
+        p.integral_initv[INTEGRAL_12] = integral_init12v_c;
+        p.integral_initv[INTEGRAL_16] = integral_init16v_c;
+        p.integral_initv[INTEGRAL_24] = integral_init24v_c;
+        p.integral_initv[INTEGRAL_32] = integral_init32v_c;
+        p.integral_inith[INTEGRAL_4] = integral_init4h_c;
+        p.integral_inith[INTEGRAL_8] = integral_init8h_c;
+        p.integral_inith[INTEGRAL_12] = integral_init12h_c;
+        p.integral_inith[INTEGRAL_16] = integral_init16h_c;
+        p.integral_inith[INTEGRAL_24] = integral_init24h_c;
+        p.integral_inith[INTEGRAL_32] = integral_init32h_c;
+    }
+}
+
 void FrameFilter::destroy()
 {
     X265_FREE(m_ssimBuf);
@@ -63,8 +185,9 @@ void FrameFilter::init(Encoder *top, FrameEncoder *frame, int numRows, uint32_t 
     m_pad[0] = top->m_sps.conformanceWindow.rightOffset;
     m_pad[1] = top->m_sps.conformanceWindow.bottomOffset;
     m_saoRowDelay = m_param->bEnableLoopFilter ? 1 : 0;
-    m_lastHeight = (m_param->sourceHeight % g_maxCUSize) ? (m_param->sourceHeight % g_maxCUSize) : g_maxCUSize;
-    m_lastWidth = (m_param->sourceWidth % g_maxCUSize) ? (m_param->sourceWidth % g_maxCUSize) : g_maxCUSize;
+    m_lastHeight = (m_param->sourceHeight % m_param->maxCUSize) ? (m_param->sourceHeight % m_param->maxCUSize) : m_param->maxCUSize;
+    m_lastWidth = (m_param->sourceWidth % m_param->maxCUSize) ? (m_param->sourceWidth % m_param->maxCUSize) : m_param->maxCUSize;
+    integralCompleted.set(0);
 
     if (m_param->bEnableSsim)
         m_ssimBuf = X265_MALLOC(int, 8 * (m_param->sourceWidth / 4 + 3));
@@ -91,7 +214,7 @@ void FrameFilter::init(Encoder *top, FrameEncoder *frame, int numRows, uint32_t 
         for(int row = 0; row < numRows; row++)
         {
             // Setting maximum bound information
-            m_parallelFilter[row].m_rowHeight = (row == numRows - 1) ? m_lastHeight : g_maxCUSize;
+            m_parallelFilter[row].m_rowHeight = (row == numRows - 1) ? m_lastHeight : m_param->maxCUSize;
             m_parallelFilter[row].m_row = row;
             m_parallelFilter[row].m_rowAddr = row * numCols;
             m_parallelFilter[row].m_frameFilter = this;
@@ -174,11 +297,11 @@ static void origCUSampleRestoration(const CUData* cu, const CUGeom& cuGeom, Fram
         restoreOrigLosslessYuv(cu, frame, absPartIdx);
 }
 
-void FrameFilter::ParallelFilter::copySaoAboveRef(PicYuv* reconPic, uint32_t cuAddr, int col)
+void FrameFilter::ParallelFilter::copySaoAboveRef(const CUData *ctu, PicYuv* reconPic, uint32_t cuAddr, int col)
 {
     // Copy SAO Top Reference Pixels
-    int ctuWidth  = g_maxCUSize;
-    const pixel* recY = reconPic->getPlaneAddr(0, cuAddr) - (m_rowAddr == 0 ? 0 : reconPic->m_stride);
+    int ctuWidth  = ctu->m_encData->m_param->maxCUSize;
+    const pixel* recY = reconPic->getPlaneAddr(0, cuAddr) - (ctu->m_bFirstRowInSlice ? 0 : reconPic->m_stride);
 
     // Luma
     memcpy(&m_sao.m_tmpU[0][col * ctuWidth], recY, ctuWidth * sizeof(pixel));
@@ -189,8 +312,8 @@ void FrameFilter::ParallelFilter::copySaoAboveRef(PicYuv* reconPic, uint32_t cuA
     {
         ctuWidth  >>= m_sao.m_hChromaShift;
 
-        const pixel* recU = reconPic->getPlaneAddr(1, cuAddr) - (m_rowAddr == 0 ? 0 : reconPic->m_strideC);
-        const pixel* recV = reconPic->getPlaneAddr(2, cuAddr) - (m_rowAddr == 0 ? 0 : reconPic->m_strideC);
+        const pixel* recU = reconPic->getPlaneAddr(1, cuAddr) - (ctu->m_bFirstRowInSlice ? 0 : reconPic->m_strideC);
+        const pixel* recV = reconPic->getPlaneAddr(2, cuAddr) - (ctu->m_bFirstRowInSlice ? 0 : reconPic->m_strideC);
         memcpy(&m_sao.m_tmpU[1][col * ctuWidth], recU, ctuWidth * sizeof(pixel));
         memcpy(&m_sao.m_tmpU[2][col * ctuWidth], recV, ctuWidth * sizeof(pixel));
 
@@ -325,7 +448,7 @@ void FrameFilter::ParallelFilter::processTasks(int /*workerThreadId*/)
     int colEnd = m_allowedCol.get();
 
     // Avoid threading conflict
-    if (m_prevRow && colEnd > m_prevRow->m_lastDeblocked.get())
+    if (!m_encData->getPicCTU(m_rowAddr)->m_bFirstRowInSlice && colEnd > m_prevRow->m_lastDeblocked.get())
         colEnd = m_prevRow->m_lastDeblocked.get();
 
     if (colStart >= colEnd)
@@ -334,29 +457,29 @@ void FrameFilter::ParallelFilter::processTasks(int /*workerThreadId*/)
     for (uint32_t col = (uint32_t)colStart; col < (uint32_t)colEnd; col++)
     {
         const uint32_t cuAddr = m_rowAddr + col;
+        const CUData* ctu = m_encData->getPicCTU(cuAddr);
 
         if (m_frameFilter->m_param->bEnableLoopFilter)
         {
-            const CUData* ctu = m_encData->getPicCTU(cuAddr);
             deblockCTU(ctu, cuGeoms[ctuGeomMap[cuAddr]], Deblock::EDGE_VER);
         }
 
         if (col >= 1)
         {
+            const CUData* ctuPrev = m_encData->getPicCTU(cuAddr - 1);
             if (m_frameFilter->m_param->bEnableLoopFilter)
             {
-                const CUData* ctuPrev = m_encData->getPicCTU(cuAddr - 1);
                 deblockCTU(ctuPrev, cuGeoms[ctuGeomMap[cuAddr - 1]], Deblock::EDGE_HOR);
 
                 // When SAO Disable, setting column counter here
-                if ((!m_frameFilter->m_param->bEnableSAO) & (m_row >= 1))
+                if (!m_frameFilter->m_param->bEnableSAO & !ctuPrev->m_bFirstRowInSlice)
                     m_prevRow->processPostCu(col - 1);
             }
 
             if (m_frameFilter->m_param->bEnableSAO)
             {
                 // Save SAO bottom row reference pixels
-                copySaoAboveRef(reconPic, cuAddr - 1, col - 1);
+                copySaoAboveRef(ctuPrev, reconPic, cuAddr - 1, col - 1);
 
                 // SAO Decide
                 if (col >= 2)
@@ -364,11 +487,11 @@ void FrameFilter::ParallelFilter::processTasks(int /*workerThreadId*/)
                     // NOTE: Delay 2 column to avoid mistake on below case, it is Deblock sync logic issue, less probability but still alive
                     //       ... H V |
                     //       ..S H V |
-                    m_sao.rdoSaoUnitCu(saoParam, m_rowAddr, col - 2, cuAddr - 2);
+                    m_sao.rdoSaoUnitCu(saoParam, (ctu->m_bFirstRowInSlice ? 0 : m_rowAddr), col - 2, cuAddr - 2);
                 }
 
                 // Process Previous Row SAO CU
-                if (m_row >= 1 && col >= 3)
+                if (!ctu->m_bFirstRowInSlice && col >= 3)
                 {
                     // Must delay 1 row to avoid thread data race conflict
                     m_prevRow->processSaoCTU(saoParam, col - 3);
@@ -384,52 +507,54 @@ void FrameFilter::ParallelFilter::processTasks(int /*workerThreadId*/)
     if (colEnd == numCols)
     {
         const uint32_t cuAddr = m_rowAddr + numCols - 1;
+        const CUData* ctuPrev = m_encData->getPicCTU(cuAddr);
 
         if (m_frameFilter->m_param->bEnableLoopFilter)
         {
-            const CUData* ctuPrev = m_encData->getPicCTU(cuAddr);
             deblockCTU(ctuPrev, cuGeoms[ctuGeomMap[cuAddr]], Deblock::EDGE_HOR);
 
             // When SAO Disable, setting column counter here
-            if ((!m_frameFilter->m_param->bEnableSAO) & (m_row >= 1))
+            if (!m_frameFilter->m_param->bEnableSAO & !ctuPrev->m_bFirstRowInSlice)
                 m_prevRow->processPostCu(numCols - 1);
         }
 
         // TODO: move processPostCu() into processSaoUnitCu()
         if (m_frameFilter->m_param->bEnableSAO)
         {
+            const CUData* ctu = m_encData->getPicCTU(m_rowAddr + numCols - 2);
+
             // Save SAO bottom row reference pixels
-            copySaoAboveRef(reconPic, cuAddr, numCols - 1);
+            copySaoAboveRef(ctuPrev, reconPic, cuAddr, numCols - 1);
 
             // SAO Decide
             // NOTE: reduce condition check for 1 CU only video, Why someone play with it?
             if (numCols >= 2)
-                m_sao.rdoSaoUnitCu(saoParam, m_rowAddr, numCols - 2, cuAddr - 1);
+                m_sao.rdoSaoUnitCu(saoParam, (ctu->m_bFirstRowInSlice ? 0 : m_rowAddr), numCols - 2, cuAddr - 1);
 
             if (numCols >= 1)
-                m_sao.rdoSaoUnitCu(saoParam, m_rowAddr, numCols - 1, cuAddr);
+                m_sao.rdoSaoUnitCu(saoParam, (ctuPrev->m_bFirstRowInSlice ? 0 : m_rowAddr), numCols - 1, cuAddr);
 
             // Process Previous Rows SAO CU
-            if (m_row >= 1 && numCols >= 3)
+            if (!ctuPrev->m_bFirstRowInSlice & (numCols >= 3))
             {
                 m_prevRow->processSaoCTU(saoParam, numCols - 3);
                 m_prevRow->processPostCu(numCols - 3);
             }
 
-            if (m_row >= 1 && numCols >= 2)
+            if (!ctuPrev->m_bFirstRowInSlice & (numCols >= 2))
             {
                 m_prevRow->processSaoCTU(saoParam, numCols - 2);
                 m_prevRow->processPostCu(numCols - 2);
             }
 
-            if (m_row >= 1 && numCols >= 1)
+            if (!ctuPrev->m_bFirstRowInSlice & (numCols >= 1))
             {
                 m_prevRow->processSaoCTU(saoParam, numCols - 1);
                 m_prevRow->processPostCu(numCols - 1);
             }
 
             // Setting column sync counter
-            if (m_row >= 1)
+            if (!ctuPrev->m_bFirstRowInSlice)
                 m_frameFilter->m_frame->m_reconColCount[m_row - 1].set(numCols - 1);
         }
         m_lastDeblocked.set(numCols);
@@ -454,22 +579,20 @@ void FrameFilter::processRow(int row)
 
     // SAO: was integrate into encode loop
     SAOParam* saoParam = encData.m_saoParam;
+    CUData* ctu = encData.getPicCTU(m_parallelFilter[row].m_rowAddr);
 
     /* Processing left block Deblock with current threading */
-    {
-        /* stop threading on current row */
-        m_parallelFilter[row].waitForExit();
-
+    {        
         /* Check to avoid previous row process slower than current row */
-        X265_CHECK((row < 1) || m_parallelFilter[row - 1].m_lastDeblocked.get() == m_numCols, "previous row not finish");
+        X265_CHECK(ctu->m_bFirstRowInSlice || m_parallelFilter[row - 1].m_lastDeblocked.get() == m_numCols, "previous row not finish");
 
         m_parallelFilter[row].m_allowedCol.set(m_numCols);
         m_parallelFilter[row].processTasks(-1);
 
-        if (row == m_numRows - 1)
+        if (ctu->m_bLastRowInSlice)
         {
             /* TODO: Early start last row */
-            if ((row >= 1) && (m_parallelFilter[row - 1].m_lastDeblocked.get() != m_numCols))
+            if ((!ctu->m_bFirstRowInSlice) && (m_parallelFilter[row - 1].m_lastDeblocked.get() != m_numCols))
                 x265_log(m_param, X265_LOG_WARNING, "detected ParallelFilter race condition on last row\n");
 
             /* Apply SAO on last row of CUs, because we always apply SAO on row[X-1] */
@@ -492,11 +615,24 @@ void FrameFilter::processRow(int row)
     }
 
     // this row of CTUs has been encoded
-
-    if (row > 0)
+    if (!ctu->m_bFirstRowInSlice)
         processPostRow(row - 1);
 
-    if (row == m_numRows - 1)
+    // NOTE: slices parallelism will be execute out-of-order
+    int numRowFinished = 0;
+    if (m_frame->m_reconRowFlag)
+    {
+        for (numRowFinished = 0; numRowFinished < m_numRows; numRowFinished++)
+        {
+            if (!m_frame->m_reconRowFlag[numRowFinished].get())
+                break;
+
+            if (numRowFinished == row)
+                continue;
+        }
+    }
+
+    if (numRowFinished == m_numRows)
     {
         if (m_param->bEnableSAO)
         {
@@ -509,8 +645,10 @@ void FrameFilter::processRow(int row)
 
             m_parallelFilter[0].m_sao.rdoSaoUnitRowEnd(saoParam, encData.m_slice->m_sps->numCUsInFrame);
         }
-        processPostRow(row);
     }
+
+    if (ctu->m_bLastRowInSlice)
+        processPostRow(row);
 }
 
 void FrameFilter::processPostRow(int row)
@@ -519,8 +657,11 @@ void FrameFilter::processPostRow(int row)
     const uint32_t numCols = m_frame->m_encData->m_slice->m_sps->numCuInWidth;
     const uint32_t lineStartCUAddr = row * numCols;
 
+    /* Generate integral planes for SEA motion search */
+    if(m_param->searchMethod == X265_SEA)
+        computeMEIntegral(row);
     // Notify other FrameEncoders that this row of reconstructed pixels is available
-    m_frame->m_reconRowCount.incr();
+    m_frame->m_reconRowFlag[row].set(1);
 
     uint32_t cuAddr = lineStartCUAddr;
     if (m_param->bEnablePsnr)
@@ -547,16 +688,17 @@ void FrameFilter::processPostRow(int row)
             m_frameEncoder->m_SSDV += ssdV;
         }
     }
+
     if (m_param->bEnableSsim && m_ssimBuf)
     {
         pixel *rec = reconPic->m_picOrg[0];
         pixel *fenc = m_frame->m_fencPic->m_picOrg[0];
         intptr_t stride1 = reconPic->m_stride;
         intptr_t stride2 = m_frame->m_fencPic->m_stride;
-        uint32_t bEnd = ((row + 1) == (this->m_numRows - 1));
+        uint32_t bEnd = ((row) == (this->m_numRows - 1));
         uint32_t bStart = (row == 0);
-        uint32_t minPixY = row * g_maxCUSize - 4 * !bStart;
-        uint32_t maxPixY = (row + 1) * g_maxCUSize - 4 * !bEnd;
+        uint32_t minPixY = row * m_param->maxCUSize - 4 * !bStart;
+        uint32_t maxPixY = X265_MIN((row + 1) * m_param->maxCUSize - 4 * !bEnd, (uint32_t)m_param->sourceHeight);
         uint32_t ssim_cnt;
         x265_emms();
 
@@ -567,81 +709,189 @@ void FrameFilter::processPostRow(int row)
                                                 m_param->sourceWidth - 2, maxPixY - minPixY, m_ssimBuf, ssim_cnt);
         m_frameEncoder->m_ssimCnt += ssim_cnt;
     }
-    if (m_param->decodedPictureHashSEI == 1)
+
+    if (m_param->maxSlices == 1)
     {
-        uint32_t height = m_parallelFilter[row].getCUHeight();
-        uint32_t width = reconPic->m_picWidth;
-        intptr_t stride = reconPic->m_stride;
-
-        if (!row)
-            MD5Init(&m_frameEncoder->m_state[0]);
-
-        updateMD5Plane(m_frameEncoder->m_state[0], reconPic->getLumaAddr(cuAddr), width, height, stride);
-        if (m_param->internalCsp != X265_CSP_I400)
+        if (m_param->decodedPictureHashSEI == 1)
         {
+            uint32_t height = m_parallelFilter[row].getCUHeight();
+            uint32_t width = reconPic->m_picWidth;
+            intptr_t stride = reconPic->m_stride;
+
             if (!row)
+                MD5Init(&m_frameEncoder->m_state[0]);
+
+            updateMD5Plane(m_frameEncoder->m_state[0], reconPic->getLumaAddr(cuAddr), width, height, stride);
+            if (m_param->internalCsp != X265_CSP_I400)
             {
-                MD5Init(&m_frameEncoder->m_state[1]);
-                MD5Init(&m_frameEncoder->m_state[2]);
+                if (!row)
+                {
+                    MD5Init(&m_frameEncoder->m_state[1]);
+                    MD5Init(&m_frameEncoder->m_state[2]);
+                }
+
+                width >>= m_hChromaShift;
+                height >>= m_vChromaShift;
+                stride = reconPic->m_strideC;
+
+                updateMD5Plane(m_frameEncoder->m_state[1], reconPic->getCbAddr(cuAddr), width, height, stride);
+                updateMD5Plane(m_frameEncoder->m_state[2], reconPic->getCrAddr(cuAddr), width, height, stride);
             }
-
-            width >>= m_hChromaShift;
-            height >>= m_vChromaShift;
-            stride = reconPic->m_strideC;
-
-            updateMD5Plane(m_frameEncoder->m_state[1], reconPic->getCbAddr(cuAddr), width, height, stride);
-            updateMD5Plane(m_frameEncoder->m_state[2], reconPic->getCrAddr(cuAddr), width, height, stride);
         }
-    }
-    else if (m_param->decodedPictureHashSEI == 2)
-    {
-        uint32_t height = m_parallelFilter[row].getCUHeight();
-        uint32_t width = reconPic->m_picWidth;
-        intptr_t stride = reconPic->m_stride;
-
-        if (!row)
-            m_frameEncoder->m_crc[0] = 0xffff;
-
-        updateCRC(reconPic->getLumaAddr(cuAddr), m_frameEncoder->m_crc[0], height, width, stride);
-        if (m_param->internalCsp != X265_CSP_I400)
+        else if (m_param->decodedPictureHashSEI == 2)
         {
-            width >>= m_hChromaShift;
-            height >>= m_vChromaShift;
-            stride = reconPic->m_strideC;
-            m_frameEncoder->m_crc[1] = m_frameEncoder->m_crc[2] = 0xffff;
-
-            updateCRC(reconPic->getCbAddr(cuAddr), m_frameEncoder->m_crc[1], height, width, stride);
-            updateCRC(reconPic->getCrAddr(cuAddr), m_frameEncoder->m_crc[2], height, width, stride);
-        }
-    }
-    else if (m_param->decodedPictureHashSEI == 3)
-    {
-        uint32_t width = reconPic->m_picWidth;
-        uint32_t height = m_parallelFilter[row].getCUHeight();
-        intptr_t stride = reconPic->m_stride;
-        uint32_t cuHeight = g_maxCUSize;
-
-        if (!row)
-            m_frameEncoder->m_checksum[0] = 0;
-
-        updateChecksum(reconPic->m_picOrg[0], m_frameEncoder->m_checksum[0], height, width, stride, row, cuHeight);
-        if (m_param->internalCsp != X265_CSP_I400)
-        {
-            width >>= m_hChromaShift;
-            height >>= m_vChromaShift;
-            stride = reconPic->m_strideC;
-            cuHeight >>= m_vChromaShift;
+            uint32_t height = m_parallelFilter[row].getCUHeight();
+            uint32_t width = reconPic->m_picWidth;
+            intptr_t stride = reconPic->m_stride;
 
             if (!row)
-                m_frameEncoder->m_checksum[1] = m_frameEncoder->m_checksum[2] = 0;
+                m_frameEncoder->m_crc[0] = 0xffff;
 
-            updateChecksum(reconPic->m_picOrg[1], m_frameEncoder->m_checksum[1], height, width, stride, row, cuHeight);
-            updateChecksum(reconPic->m_picOrg[2], m_frameEncoder->m_checksum[2], height, width, stride, row, cuHeight);
+            updateCRC(reconPic->getLumaAddr(cuAddr), m_frameEncoder->m_crc[0], height, width, stride);
+            if (m_param->internalCsp != X265_CSP_I400)
+            {
+                width >>= m_hChromaShift;
+                height >>= m_vChromaShift;
+                stride = reconPic->m_strideC;
+                m_frameEncoder->m_crc[1] = m_frameEncoder->m_crc[2] = 0xffff;
+
+                updateCRC(reconPic->getCbAddr(cuAddr), m_frameEncoder->m_crc[1], height, width, stride);
+                updateCRC(reconPic->getCrAddr(cuAddr), m_frameEncoder->m_crc[2], height, width, stride);
+            }
         }
-    }
+        else if (m_param->decodedPictureHashSEI == 3)
+        {
+            uint32_t width = reconPic->m_picWidth;
+            uint32_t height = m_parallelFilter[row].getCUHeight();
+            intptr_t stride = reconPic->m_stride;
+            uint32_t cuHeight = m_param->maxCUSize;
+
+            if (!row)
+                m_frameEncoder->m_checksum[0] = 0;
+
+            updateChecksum(reconPic->m_picOrg[0], m_frameEncoder->m_checksum[0], height, width, stride, row, cuHeight);
+            if (m_param->internalCsp != X265_CSP_I400)
+            {
+                width >>= m_hChromaShift;
+                height >>= m_vChromaShift;
+                stride = reconPic->m_strideC;
+                cuHeight >>= m_vChromaShift;
+
+                if (!row)
+                    m_frameEncoder->m_checksum[1] = m_frameEncoder->m_checksum[2] = 0;
+
+                updateChecksum(reconPic->m_picOrg[1], m_frameEncoder->m_checksum[1], height, width, stride, row, cuHeight);
+                updateChecksum(reconPic->m_picOrg[2], m_frameEncoder->m_checksum[2], height, width, stride, row, cuHeight);
+            }
+        }
+    } // end of (m_param->maxSlices == 1)
 
     if (ATOMIC_INC(&m_frameEncoder->m_completionCount) == 2 * (int)m_frameEncoder->m_numRows)
+    {
         m_frameEncoder->m_completionEvent.trigger();
+    }
+}
+
+void FrameFilter::computeMEIntegral(int row)
+{
+    int lastRow = row == (int)m_frame->m_encData->m_slice->m_sps->numCuInHeight - 1;
+    if (m_frame->m_lowres.sliceType != X265_TYPE_B)
+    {
+        /* If WPP, other than first row, integral calculation for current row needs to wait till the
+        * integral for the previous row is computed */
+        if (m_param->bEnableWavefront && row)
+        {
+            while (m_parallelFilter[row - 1].m_frameFilter->integralCompleted.get() == 0)
+            {
+                m_parallelFilter[row - 1].m_frameFilter->integralCompleted.waitForChange(0);
+            }
+        }
+
+        int stride = (int)m_frame->m_reconPic->m_stride;
+        int padX = m_param->maxCUSize + 32;
+        int padY = m_param->maxCUSize + 16;
+        int numCuInHeight = m_frame->m_encData->m_slice->m_sps->numCuInHeight;
+        int maxHeight = numCuInHeight * m_param->maxCUSize;
+        int startRow = 0;
+
+        if (m_param->interlaceMode)
+            startRow = (row * m_param->maxCUSize >> 1);
+        else
+            startRow = row * m_param->maxCUSize;
+
+        int height = lastRow ? (maxHeight + m_param->maxCUSize * m_param->interlaceMode) : (((row + m_param->interlaceMode) * m_param->maxCUSize) + m_param->maxCUSize);
+
+        if (!row)
+        {
+            for (int i = 0; i < INTEGRAL_PLANE_NUM; i++)
+                memset(m_frame->m_encData->m_meIntegral[i] - padY * stride - padX, 0, stride * sizeof(uint32_t));
+            startRow = -padY;
+        }
+
+        if (lastRow)
+            height += padY - 1;
+
+        for (int y = startRow; y < height; y++)
+        {
+            pixel    *pix = m_frame->m_reconPic->m_picOrg[0] + y * stride - padX;
+            uint32_t *sum32x32 = m_frame->m_encData->m_meIntegral[0] + (y + 1) * stride - padX;
+            uint32_t *sum32x24 = m_frame->m_encData->m_meIntegral[1] + (y + 1) * stride - padX;
+            uint32_t *sum32x8 = m_frame->m_encData->m_meIntegral[2] + (y + 1) * stride - padX;
+            uint32_t *sum24x32 = m_frame->m_encData->m_meIntegral[3] + (y + 1) * stride - padX;
+            uint32_t *sum16x16 = m_frame->m_encData->m_meIntegral[4] + (y + 1) * stride - padX;
+            uint32_t *sum16x12 = m_frame->m_encData->m_meIntegral[5] + (y + 1) * stride - padX;
+            uint32_t *sum16x4 = m_frame->m_encData->m_meIntegral[6] + (y + 1) * stride - padX;
+            uint32_t *sum12x16 = m_frame->m_encData->m_meIntegral[7] + (y + 1) * stride - padX;
+            uint32_t *sum8x32 = m_frame->m_encData->m_meIntegral[8] + (y + 1) * stride - padX;
+            uint32_t *sum8x8 = m_frame->m_encData->m_meIntegral[9] + (y + 1) * stride - padX;
+            uint32_t *sum4x16 = m_frame->m_encData->m_meIntegral[10] + (y + 1) * stride - padX;
+            uint32_t *sum4x4 = m_frame->m_encData->m_meIntegral[11] + (y + 1) * stride - padX;
+
+            /*For width = 32 */
+            primitives.integral_inith[INTEGRAL_32](sum32x32, pix, stride);
+            if (y >= 32 - padY)
+                primitives.integral_initv[INTEGRAL_32](sum32x32 - 32 * stride, stride);
+            primitives.integral_inith[INTEGRAL_32](sum32x24, pix, stride);
+            if (y >= 24 - padY)
+                primitives.integral_initv[INTEGRAL_24](sum32x24 - 24 * stride, stride);
+            primitives.integral_inith[INTEGRAL_32](sum32x8, pix, stride);
+            if (y >= 8 - padY)
+                primitives.integral_initv[INTEGRAL_8](sum32x8 - 8 * stride, stride);
+            /*For width = 24 */
+            primitives.integral_inith[INTEGRAL_24](sum24x32, pix, stride);
+            if (y >= 32 - padY)
+                primitives.integral_initv[INTEGRAL_32](sum24x32 - 32 * stride, stride);
+            /*For width = 16 */
+            primitives.integral_inith[INTEGRAL_16](sum16x16, pix, stride);
+            if (y >= 16 - padY)
+                primitives.integral_initv[INTEGRAL_16](sum16x16 - 16 * stride, stride);
+            primitives.integral_inith[INTEGRAL_16](sum16x12, pix, stride);
+            if (y >= 12 - padY)
+                primitives.integral_initv[INTEGRAL_12](sum16x12 - 12 * stride, stride);
+            primitives.integral_inith[INTEGRAL_16](sum16x4, pix, stride);
+            if (y >= 4 - padY)
+                primitives.integral_initv[INTEGRAL_4](sum16x4 - 4 * stride, stride);
+            /*For width = 12 */
+            primitives.integral_inith[INTEGRAL_12](sum12x16, pix, stride);
+            if (y >= 16 - padY)
+                primitives.integral_initv[INTEGRAL_16](sum12x16 - 16 * stride, stride);
+            /*For width = 8 */
+            primitives.integral_inith[INTEGRAL_8](sum8x32, pix, stride);
+            if (y >= 32 - padY)
+                primitives.integral_initv[INTEGRAL_32](sum8x32 - 32 * stride, stride);
+            primitives.integral_inith[INTEGRAL_8](sum8x8, pix, stride);
+            if (y >= 8 - padY)
+                primitives.integral_initv[INTEGRAL_8](sum8x8 - 8 * stride, stride);
+            /*For width = 4 */
+            primitives.integral_inith[INTEGRAL_4](sum4x16, pix, stride);
+            if (y >= 16 - padY)
+                primitives.integral_initv[INTEGRAL_16](sum4x16 - 16 * stride, stride);
+            primitives.integral_inith[INTEGRAL_4](sum4x4, pix, stride);
+            if (y >= 4 - padY)
+                primitives.integral_initv[INTEGRAL_4](sum4x4 - 4 * stride, stride);
+        }
+        m_parallelFilter[row].m_frameFilter->integralCompleted.set(1);
+    }
 }
 
 static uint64_t computeSSD(pixel *fenc, pixel *rec, intptr_t stride, uint32_t width, uint32_t height)
@@ -726,7 +976,7 @@ static float calculateSSIM(pixel *pix1, intptr_t stride1, pixel *pix2, intptr_t 
         {
             std::swap(sum0, sum1);
             for (uint32_t x = 0; x < width; x += 2)
-                primitives.ssim_4x4x2_core(&pix1[(4 * x + (z * stride1))], stride1, &pix2[(4 * x + (z * stride2))], stride2, &sum0[x]);
+                primitives.ssim_4x4x2_core(&pix1[4 * (x + (z * stride1))], stride1, &pix2[4 * (x + (z * stride2))], stride2, &sum0[x]);
         }
 
         for (uint32_t x = 0; x < width - 1; x += 4)

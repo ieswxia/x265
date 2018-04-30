@@ -1,5 +1,5 @@
 ;*****************************************************************************
-;* Copyright (C) 2013 x265 project
+;* Copyright (C) 2013-2017 MulticoreWare, Inc
 ;*
 ;* Authors: Min Chen <chenm003@163.com> <min.chen@multicorewareinc.com>
 ;*          Praveen Kumar Tiwari <praveen@multicorewareinc.com>
@@ -2148,7 +2148,7 @@ cglobal intra_pred_ang4_26, 3,4,4
     paddw       m0, m1
     packuswb    m0, m0
 
-    movd        r2, m0
+    movd        r2d, m0
     mov         [r0], r2b
     shr         r2, 8
     mov         [r0 + r1], r2b
